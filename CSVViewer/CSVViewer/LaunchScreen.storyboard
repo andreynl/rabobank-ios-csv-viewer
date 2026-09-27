@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="26000" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="launch-view-controller">
+    <device id="retina6_12" orientation="portrait" appearance="light"/>
+    <dependencies>
+        <deployment identifier="iOS"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="26000"/>
+        <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+        <capability name="System colors in document resources" minToolsVersion="11.0"/>
+    </dependencies>
+    <scenes>
+        <scene sceneID="launch-scene">
+            <objects>
+                <viewController id="launch-view-controller" sceneMemberID="viewController">
+                    <view key="view" contentMode="scaleToFill" id="launch-root-view">
+                        <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                        <subviews>
+                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFill" image="LaunchArtwork" translatesAutoresizingMaskIntoConstraints="NO" id="launch-artwork-view">
+                                <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
+                            </imageView>
+                            <view contentMode="scaleToFill" translatesAutoresizingMaskIntoConstraints="NO" id="logo-background-view">
+                                <rect key="frame" x="51.5" y="127" width="290" height="84"/>
+                                <subviews>
+                                    <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" image="RabobankLogo" translatesAutoresizingMaskIntoConstraints="NO" id="rabobank-logo-view">
+                                        <rect key="frame" x="24" y="14" width="242" height="56"/>
+                                    </imageView>
+                                </subviews>
+                                <color key="backgroundColor" white="1" alpha="0.94" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                <constraints>
+                                    <constraint firstItem="rabobank-logo-view" firstAttribute="leading" secondItem="logo-background-view" secondAttribute="leading" constant="24" id="logo-leading"/>
+                                    <constraint firstAttribute="trailing" secondItem="rabobank-logo-view" secondAttribute="trailing" constant="24" id="logo-trailing"/>
+                                    <constraint firstItem="rabobank-logo-view" firstAttribute="top" secondItem="logo-background-view" secondAttribute="top" constant="14" id="logo-top"/>
+                                    <constraint firstAttribute="bottom" secondItem="rabobank-logo-view" secondAttribute="bottom" constant="14" id="logo-bottom"/>
+                                </constraints>
+                            </view>
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="CSV Viewer for Rabobank" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" translatesAutoresizingMaskIntoConstraints="NO" id="launch-title-label">
+                                <rect key="frame" x="47" y="235" width="299" height="34"/>
+                                <fontDescription key="fontDescription" type="system" weight="semibold" pointSize="25"/>
+                                <color key="textColor" white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                <nil key="highlightedColor"/>
+                            </label>
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Team Native Assignment" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" translatesAutoresizingMaskIntoConstraints="NO" id="launch-subtitle-label">
+                                <rect key="frame" x="111.5" y="277" width="170" height="19"/>
+                                <fontDescription key="fontDescription" type="system" weight="medium" pointSize="15"/>
+                                <color key="textColor" red="0.756" green="0.882" blue="1" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                                <nil key="highlightedColor"/>
+                            </label>
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Swift 6 • Clean Architecture" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" translatesAutoresizingMaskIntoConstraints="NO" id="launch-technology-label">
+                                <rect key="frame" x="105" y="306" width="183" height="17"/>
+                                <fontDescription key="fontDescription" type="system" weight="regular" pointSize="13"/>
+                                <color key="textColor" red="0.631" green="0.804" blue="1" alpha="0.9" colorSpace="custom" customColorSpace="sRGB"/>
+                                <nil key="highlightedColor"/>
+                            </label>
+                        </subviews>
+                        <viewLayoutGuide key="safeArea" id="launch-safe-area"/>
+                        <color key="backgroundColor" red="0.015" green="0.102" blue="0.337" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                        <constraints>
+                            <constraint firstItem="launch-artwork-view" firstAttribute="top" secondItem="launch-root-view" secondAttribute="top" id="artwork-top"/>
+                            <constraint firstItem="launch-artwork-view" firstAttribute="leading" secondItem="launch-root-view" secondAttribute="leading" id="artwork-leading"/>
+                            <constraint firstAttribute="trailing" secondItem="launch-artwork-view" secondAttribute="trailing" id="artwork-trailing"/>
+                            <constraint firstAttribute="bottom" secondItem="launch-artwork-view" secondAttribute="bottom" id="artwork-bottom"/>
+                            <constraint firstItem="logo-background-view" firstAttribute="centerX" secondItem="launch-root-view" secondAttribute="centerX" id="logo-center-x"/>
+                            <constraint firstItem="logo-background-view" firstAttribute="top" secondItem="launch-safe-area" secondAttribute="top" constant="68" id="logo-safe-top"/>
+                            <constraint firstItem="logo-background-view" firstAttribute="width" constant="290" id="logo-width"/>
+                            <constraint firstItem="logo-background-view" firstAttribute="height" constant="84" id="logo-height"/>
+                            <constraint firstItem="launch-title-label" firstAttribute="top" secondItem="logo-background-view" secondAttribute="bottom" constant="24" id="title-top"/>
+                            <constraint firstItem="launch-title-label" firstAttribute="centerX" secondItem="launch-root-view" secondAttribute="centerX" id="title-center-x"/>
+                            <constraint firstItem="launch-subtitle-label" firstAttribute="top" secondItem="launch-title-label" secondAttribute="bottom" constant="6" id="subtitle-top"/>
+                            <constraint firstItem="launch-subtitle-label" firstAttribute="centerX" secondItem="launch-root-view" secondAttribute="centerX" id="subtitle-center-x"/>
+                            <constraint firstItem="launch-technology-label" firstAttribute="top" secondItem="launch-subtitle-label" secondAttribute="bottom" constant="8" id="technology-top"/>
+                            <constraint firstItem="launch-technology-label" firstAttribute="centerX" secondItem="launch-root-view" secondAttribute="centerX" id="technology-center-x"/>
+                        </constraints>
+                    </view>
+                </viewController>
+                <placeholder placeholderIdentifier="IBFirstResponder" id="first-responder" userLabel="First Responder" sceneMemberID="firstResponder"/>
+            </objects>
+            <point key="canvasLocation" x="46" y="375"/>
+        </scene>
+    </scenes>
+    <resources>
+        <image name="LaunchArtwork" width="941" height="1672"/>
+        <image name="RabobankLogo" width="376" height="71"/>
+    </resources>
+</document>
