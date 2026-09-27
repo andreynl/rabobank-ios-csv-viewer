@@ -9,9 +9,15 @@ import SwiftUI
 
 @main
 struct CSVViewerApp: App {
+  @StateObject private var viewModel: CSVViewModel
+
+  init() {
+    _viewModel = StateObject(wrappedValue: AppContainer().makeCSVViewModel())
+  }
+
   var body: some Scene {
     WindowGroup {
-      ContentView()
+      ContentView(viewModel: viewModel)
     }
   }
 }
