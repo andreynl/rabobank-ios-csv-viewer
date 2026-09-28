@@ -6,14 +6,24 @@ import Observation
 final class CSVViewModel {
   private(set) var state: CSVViewState = .idle
   private(set) var displayedFilename = ""
+  private(set) var headers: [String] = []
+  private(set) var availableRowCount = 0
+  private(set) var fractionCompleted: Double?
+  private(set) var isComplete = false
 
-  private let loadCSV: any LoadCSVUseCaseProtocol
+  private let loadCSV: any LoadPagedCSVUseCaseProtocol
+  private let maximumCachedPages: Int
   private var loadingTask: Task<Void, Never>?
+  private var currentSession: CSVLoadSession?
+  private var pages: [Int: CSVRowPage] = [:]
+  private var pageRecency: [Int] = []
+  private var inFlightPages: Set<Int> = []
   private var hasRequestedBundledSample = false
   private var requestGeneration = 0
 
-  init(loadCSV: any LoadCSVUseCaseProtocol) {
+  init(loadCSV: any LoadPagedCSVUseCaseProtocol, maximumCachedPages: Int = 3) {
     self.loadCSV = loadCSV
+    self.maximumCachedPages = max(1, maximumCachedPages)
   }
 
   func loadBundledSampleIfNeeded() {
@@ -27,23 +37,62 @@ final class CSVViewModel {
   }
 
   func handleImportFailure(_ error: Error) {
-    requestGeneration += 1
-    loadingTask?.cancel()
+    replaceCurrentLoad()
     state = .failure("The selected file could not be imported.")
   }
 
+  func row(at rowIndex: Int) -> [String]? {
+    guard rowIndex >= 0 else { return nil }
+    for page in pages.values where rowIndex >= page.startRow {
+      let offset = rowIndex - page.startRow
+      if page.rows.indices.contains(offset) { return page.rows[offset] }
+    }
+    return nil
+  }
+
+  func loadPage(containing rowIndex: Int) async {
+    guard rowIndex >= 0, rowIndex < availableRowCount, let session = currentSession else { return }
+    let pageIndex = rowIndex / 500
+    if pages[pageIndex] != nil {
+      markRecentlyUsed(pageIndex)
+      return
+    }
+    guard inFlightPages.insert(pageIndex).inserted else { return }
+    defer { inFlightPages.remove(pageIndex) }
+
+    do {
+      let page = try await session.pages.page(containing: rowIndex)
+      guard session === currentSession else { return }
+      pages[page.index] = page
+      markRecentlyUsed(page.index)
+      evictPagesIfNeeded()
+    } catch is CancellationError {
+      return
+    } catch {
+      guard session === currentSession else { return }
+      state = .failure(Self.message(for: CSVLoadingError.storageFailed))
+    }
+  }
+
   private func load(source: CSVSource, filename: String) {
-    requestGeneration += 1
+    replaceCurrentLoad()
     let generation = requestGeneration
-    loadingTask?.cancel()
     displayedFilename = filename
     state = .loading
 
     loadingTask = Task { [loadCSV] in
       do {
-        let document = try await loadCSV.execute(source: source)
-        guard generation == requestGeneration else { return }
-        state = document.headers.isEmpty ? .empty : .loaded(document)
+        let session = try await loadCSV.execute(source: source)
+        guard generation == requestGeneration else {
+          session.cancel()
+          await session.pages.close()
+          return
+        }
+        currentSession = session
+        for try await progress in session.updates {
+          guard generation == requestGeneration else { return }
+          apply(progress)
+        }
       } catch is CancellationError {
         return
       } catch {
@@ -53,22 +102,57 @@ final class CSVViewModel {
     }
   }
 
+  private func replaceCurrentLoad() {
+    requestGeneration += 1
+    loadingTask?.cancel()
+    loadingTask = nil
+    if let session = currentSession {
+      session.cancel()
+      Task { await session.pages.close() }
+    }
+    currentSession = nil
+    headers = []
+    availableRowCount = 0
+    fractionCompleted = nil
+    isComplete = false
+    pages.removeAll(keepingCapacity: true)
+    pageRecency.removeAll(keepingCapacity: true)
+    inFlightPages.removeAll(keepingCapacity: true)
+  }
+
+  private func apply(_ progress: CSVLoadProgress) {
+    headers = progress.headers
+    availableRowCount = max(availableRowCount, progress.availableRowCount)
+    fractionCompleted = progress.fractionCompleted
+    isComplete = progress.isComplete
+    if progress.isComplete {
+      state = progress.headers.isEmpty ? .empty : .loaded
+    } else if !progress.headers.isEmpty {
+      state = .streaming
+    }
+  }
+
+  private func markRecentlyUsed(_ pageIndex: Int) {
+    pageRecency.removeAll { $0 == pageIndex }
+    pageRecency.append(pageIndex)
+  }
+
+  private func evictPagesIfNeeded() {
+    while pages.count > maximumCachedPages, let oldest = pageRecency.first {
+      pageRecency.removeFirst()
+      pages.removeValue(forKey: oldest)
+    }
+  }
+
   private static func message(for error: Error) -> String {
     switch error as? CSVLoadingError {
-    case .resourceNotFound:
-      return "The CSV file could not be found."
-    case .accessDenied:
-      return "Access to the selected file was denied."
-    case .readFailed:
-      return "The file could not be read."
-    case .invalidEncoding:
-      return "The file is not valid UTF-8 text."
-    case .malformedCSV:
-      return "The file contains malformed CSV data."
-    case .storageFailed:
-      return "The CSV data could not be stored temporarily."
-    case nil:
-      return "The CSV file could not be loaded."
+    case .resourceNotFound: "The CSV file could not be found."
+    case .accessDenied: "Access to the selected file was denied."
+    case .readFailed: "The file could not be read."
+    case .invalidEncoding: "The file is not valid UTF-8 text."
+    case .malformedCSV: "The file contains malformed CSV data."
+    case .storageFailed: "The CSV data could not be stored temporarily."
+    case nil: "The CSV file could not be loaded."
     }
   }
 }

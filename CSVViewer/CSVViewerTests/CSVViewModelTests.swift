@@ -1,165 +1,251 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import CSVViewer
 
 @MainActor
 struct CSVViewModelTests {
-  @Test func loadsBundledDocumentThroughExpectedStates() async {
-    let useCase = ControllableLoadCSVUseCase()
-    let viewModel = CSVViewModel(loadCSV: useCase)
-    let source = CSVSource.bundled(name: "issues", extension: "csv")
-    let document = CSVDocument(headers: ["name"], rows: [["Theo"]])
+  @Test func publishesProgressiveStateAndFinalRowCount() async {
+    let setup = await makeSetup()
 
-    viewModel.loadBundledSampleIfNeeded()
-    #expect(viewModel.state == .loading)
-    await useCase.waitUntilRequested(source)
-    await useCase.succeed(source, with: document)
-    await waitUntil { viewModel.state == .loaded(document) }
+    setup.stream.yield(progress(headers: ["name"], rows: 0, fraction: 0.1))
+    await waitUntil { setup.viewModel.state == .streaming }
+    setup.stream.yield(progress(headers: ["name"], rows: 501, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
 
-    #expect(viewModel.displayedFilename == "issues.csv")
+    #expect(setup.viewModel.headers == ["name"])
+    #expect(setup.viewModel.availableRowCount == 501)
+    #expect(setup.viewModel.fractionCompleted == 1)
+    #expect(setup.viewModel.isComplete)
+    #expect(setup.viewModel.displayedFilename == "issues.csv")
+  }
+
+  @Test func headerOnlyDocumentDoesNotRequestPageZero() async {
+    let setup = await makeSetup()
+
+    setup.stream.yield(progress(headers: ["name"], rows: 0, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
+
+    #expect(await setup.provider.requestedRows.isEmpty)
   }
 
   @Test func emptyDocumentUsesEmptyState() async {
-    let useCase = ControllableLoadCSVUseCase()
-    let viewModel = CSVViewModel(loadCSV: useCase)
-    let source = CSVSource.bundled(name: "issues", extension: "csv")
-
-    viewModel.loadBundledSampleIfNeeded()
-    await useCase.waitUntilRequested(source)
-    await useCase.succeed(source, with: CSVDocument(headers: [], rows: []))
-
-    await waitUntil { viewModel.state == .empty }
+    let setup = await makeSetup()
+    setup.stream.yield(progress(headers: [], rows: 0, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .empty }
   }
 
-  @Test func headerOnlyDocumentUsesLoadedState() async {
-    let useCase = ControllableLoadCSVUseCase()
-    let viewModel = CSVViewModel(loadCSV: useCase)
-    let source = CSVSource.bundled(name: "issues", extension: "csv")
-    let document = CSVDocument(headers: ["name"], rows: [])
+  @Test func concurrentRowsFromOnePageAreFetchedOnce() async {
+    let page = CSVRowPage(index: 0, startRow: 0, rows: [["Theo"], ["Fiona"]])
+    let provider = PageProviderStub(pages: [0: page], delay: .milliseconds(20))
+    let setup = await makeSetup(provider: provider)
+    setup.stream.yield(progress(headers: ["name"], rows: 2, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
 
-    viewModel.loadBundledSampleIfNeeded()
-    await useCase.waitUntilRequested(source)
-    await useCase.succeed(source, with: document)
+    async let first: Void = setup.viewModel.loadPage(containing: 0)
+    async let second: Void = setup.viewModel.loadPage(containing: 1)
+    _ = await (first, second)
 
-    await waitUntil { viewModel.state == .loaded(document) }
+    #expect(await provider.requestedRows.count == 1)
+    #expect(setup.viewModel.row(at: 0) == ["Theo"])
+    #expect(setup.viewModel.row(at: 1) == ["Fiona"])
   }
 
-  @Test func loadingFailureUsesReadableFailureState() async {
-    let useCase = ControllableLoadCSVUseCase()
-    let viewModel = CSVViewModel(loadCSV: useCase)
-    let source = CSVSource.bundled(name: "issues", extension: "csv")
+  @Test func evictedPageCanBeFetchedAgain() async {
+    let pages = Dictionary(uniqueKeysWithValues: (0..<4).map { index in
+      let start = index * 500
+      return (index, CSVRowPage(index: index, startRow: start, rows: [["row-\(start)"]]))
+    })
+    let provider = PageProviderStub(pages: pages)
+    let setup = await makeSetup(provider: provider)
+    setup.stream.yield(progress(headers: ["name"], rows: 1_501, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
 
-    viewModel.loadBundledSampleIfNeeded()
-    await useCase.waitUntilRequested(source)
-    await useCase.fail(source, with: CSVLoadingError.readFailed)
+    for row in [0, 500, 1_000, 1_500] { await setup.viewModel.loadPage(containing: row) }
+    #expect(setup.viewModel.row(at: 0) == nil)
+    await setup.viewModel.loadPage(containing: 0)
 
-    await waitUntil { viewModel.state == .failure("The file could not be read.") }
+    #expect(setup.viewModel.row(at: 0) == ["row-0"])
+    #expect(await provider.requestedRows.filter { $0 == 0 }.count == 2)
   }
 
-  @Test func bundledSampleLoadsOnlyOnce() async {
-    let useCase = ControllableLoadCSVUseCase()
+  @Test func replacementCancelsAndClosesPreviousSession() async {
+    let useCase = ControllablePagedLoadUseCase()
+    let oldProvider = PageProviderStub(pages: [:])
+    let oldStream = ProgressStream()
     let viewModel = CSVViewModel(loadCSV: useCase)
-    let source = CSVSource.bundled(name: "issues", extension: "csv")
-
-    viewModel.loadBundledSampleIfNeeded()
-    viewModel.loadBundledSampleIfNeeded()
-    await useCase.waitUntilRequested(source)
-
-    #expect(await useCase.requestCount(for: source) == 1)
-    await useCase.succeed(source, with: CSVDocument(headers: ["name"], rows: []))
-  }
-
-  @Test func importedFileReplacesCurrentDocumentAndFilename() async {
-    let useCase = ControllableLoadCSVUseCase()
-    let viewModel = CSVViewModel(loadCSV: useCase)
+    let bundled = CSVSource.bundled(name: "issues", extension: "csv")
     let url = URL(fileURLWithPath: "/tmp/replacement.csv")
-    let source = CSVSource.file(url)
-    let document = CSVDocument(headers: ["replacement"], rows: [["value"]])
+    viewModel.loadBundledSampleIfNeeded()
+    await useCase.waitUntilRequested(bundled)
+    await useCase.succeed(bundled, with: oldStream.session(pages: oldProvider))
+    oldStream.yield(progress(headers: ["old"], rows: 0, fraction: 0.1))
+    await waitUntil { viewModel.state == .streaming }
 
     viewModel.importFile(at: url)
-    #expect(viewModel.state == .loading)
-    await useCase.waitUntilRequested(source)
-    await useCase.succeed(source, with: document)
-    await waitUntil { viewModel.state == .loaded(document) }
+    await useCase.waitUntilRequested(.file(url))
+    await waitUntil {
+      let isClosed = await oldProvider.isClosed
+      return oldStream.isCancelled && isClosed
+    }
 
+    #expect(viewModel.state == .loading)
     #expect(viewModel.displayedFilename == "replacement.csv")
   }
 
-  @Test func staleBundledResultCannotOverwriteNewerImport() async {
-    let useCase = ControllableLoadCSVUseCase()
+  @Test func storageFailureUsesReadableState() async {
+    let useCase = ControllablePagedLoadUseCase()
+    let viewModel = CSVViewModel(loadCSV: useCase)
+    let source = CSVSource.bundled(name: "issues", extension: "csv")
+    viewModel.loadBundledSampleIfNeeded()
+    await useCase.waitUntilRequested(source)
+    await useCase.fail(source, with: CSVLoadingError.storageFailed)
+    await waitUntil { viewModel.state == .failure("The CSV data could not be stored temporarily.") }
+  }
+
+  @Test func staleFailureCannotOverwriteNewerImport() async {
+    let useCase = ControllablePagedLoadUseCase()
     let viewModel = CSVViewModel(loadCSV: useCase)
     let bundled = CSVSource.bundled(name: "issues", extension: "csv")
     let importedURL = URL(fileURLWithPath: "/tmp/new.csv")
-    let imported = CSVSource.file(importedURL)
-    let importedDocument = CSVDocument(headers: ["new"], rows: [["data"]])
-
     viewModel.loadBundledSampleIfNeeded()
     await useCase.waitUntilRequested(bundled)
-    viewModel.importFile(at: importedURL)
-    await useCase.waitUntilRequested(imported)
-    await useCase.succeed(imported, with: importedDocument)
-    await waitUntil { viewModel.state == .loaded(importedDocument) }
 
-    await useCase.succeed(bundled, with: CSVDocument(headers: ["old"], rows: [["stale"]]))
+    viewModel.importFile(at: importedURL)
+    await useCase.waitUntilRequested(.file(importedURL))
+    await useCase.fail(bundled, with: CSVLoadingError.readFailed)
     await Task.yield()
 
-    #expect(viewModel.state == .loaded(importedDocument))
+    #expect(viewModel.state == .loading)
     #expect(viewModel.displayedFilename == "new.csv")
   }
 
-  private func waitUntil(
-    _ predicate: @escaping @MainActor () -> Bool
-  ) async {
+  @Test func bundledSampleLoadsOnlyOnce() async {
+    let useCase = ControllablePagedLoadUseCase()
+    let viewModel = CSVViewModel(loadCSV: useCase)
+    let source = CSVSource.bundled(name: "issues", extension: "csv")
+    viewModel.loadBundledSampleIfNeeded()
+    viewModel.loadBundledSampleIfNeeded()
+    await useCase.waitUntilRequested(source)
+    #expect(await useCase.requestCount(for: source) == 1)
+  }
+
+  private func makeSetup(
+    provider: PageProviderStub = PageProviderStub(pages: [:])
+  ) async -> (viewModel: CSVViewModel, stream: ProgressStream, provider: PageProviderStub) {
+    let useCase = ControllablePagedLoadUseCase()
+    let stream = ProgressStream()
+    let viewModel = CSVViewModel(loadCSV: useCase)
+    let source = CSVSource.bundled(name: "issues", extension: "csv")
+    viewModel.loadBundledSampleIfNeeded()
+    await useCase.waitUntilRequested(source)
+    await useCase.succeed(source, with: stream.session(pages: provider))
+    return (viewModel, stream, provider)
+  }
+
+  private func progress(
+    headers: [String], rows: Int, fraction: Double?, complete: Bool = false
+  ) -> CSVLoadProgress {
+    CSVLoadProgress(
+      headers: headers,
+      availableRowCount: rows,
+      fractionCompleted: fraction,
+      isComplete: complete
+    )
+  }
+
+  private func waitUntil(_ predicate: @escaping @MainActor () async -> Bool) async {
     for _ in 0..<1_000 {
-      if predicate() { return }
+      if await predicate() { return }
       await Task.yield()
     }
     Issue.record("Condition was not met")
   }
 }
 
-private actor ControllableLoadCSVUseCase: LoadCSVUseCaseProtocol {
+private actor ControllablePagedLoadUseCase: LoadPagedCSVUseCaseProtocol {
   private struct Request {
     let source: CSVSource
-    let continuation: CheckedContinuation<CSVDocument, Error>
+    let continuation: CheckedContinuation<CSVLoadSession, Error>
   }
-
   private var requests: [Request] = []
-  private var receivedSources: [CSVSource] = []
+  private var sources: [CSVSource] = []
 
-  func execute(source: CSVSource) async throws -> CSVDocument {
-    receivedSources.append(source)
-    return try await withCheckedThrowingContinuation { continuation in
-      requests.append(Request(source: source, continuation: continuation))
-    }
+  func execute(source: CSVSource) async throws -> CSVLoadSession {
+    sources.append(source)
+    return try await withCheckedThrowingContinuation { requests.append(Request(source: source, continuation: $0)) }
   }
 
   func waitUntilRequested(_ source: CSVSource) async {
     for _ in 0..<1_000 {
-      if receivedSources.contains(source) { return }
+      if sources.contains(source) { return }
       await Task.yield()
     }
     Issue.record("Expected request for \(source)")
   }
 
-  func requestCount(for source: CSVSource) -> Int {
-    receivedSources.filter { $0 == source }.count
-  }
+  func requestCount(for source: CSVSource) -> Int { sources.filter { $0 == source }.count }
+  func succeed(_ source: CSVSource, with session: CSVLoadSession) { resume(source, .success(session)) }
+  func fail(_ source: CSVSource, with error: Error) { resume(source, .failure(error)) }
 
-  func succeed(_ source: CSVSource, with document: CSVDocument) {
-    resume(source, with: .success(document))
+  private func resume(_ source: CSVSource, _ result: Result<CSVLoadSession, Error>) {
+    guard let index = requests.firstIndex(where: { $0.source == source }) else { return }
+    requests.remove(at: index).continuation.resume(with: result)
   }
+}
 
-  func fail(_ source: CSVSource, with error: Error) {
-    resume(source, with: .failure(error))
+private final class ProgressStream: @unchecked Sendable {
+  private struct State {
+    var continuation: AsyncThrowingStream<CSVLoadProgress, Error>.Continuation?
+    var cancelled = false
   }
+  private let state = Mutex(State())
+  var isCancelled: Bool { state.withLock(\.cancelled) }
 
-  private func resume(_ source: CSVSource, with result: Result<CSVDocument, Error>) {
-    guard let index = requests.firstIndex(where: { $0.source == source }) else {
-      Issue.record("No pending request for \(source)")
-      return
+  func session(pages: any CSVPageProviding) -> CSVLoadSession {
+    let updates = AsyncThrowingStream<CSVLoadProgress, Error> { continuation in
+      state.withLock { $0.continuation = continuation }
     }
-    let request = requests.remove(at: index)
-    request.continuation.resume(with: result)
+    return CSVLoadSession(updates: updates, pages: pages) { [weak self] in
+      self?.cancel()
+    }
   }
+
+  func yield(_ progress: CSVLoadProgress) {
+    _ = state.withLock { $0.continuation?.yield(progress) }
+  }
+  func finish() { state.withLock { $0.continuation?.finish() } }
+
+  private func cancel() {
+    state.withLock { value in
+      value.cancelled = true
+      value.continuation?.finish()
+    }
+  }
+}
+
+private actor PageProviderStub: CSVPageProviding {
+  private let pages: [Int: CSVRowPage]
+  private let delay: Duration
+  private(set) var requestedRows: [Int] = []
+  private(set) var isClosed = false
+
+  init(pages: [Int: CSVRowPage], delay: Duration = .zero) {
+    self.pages = pages
+    self.delay = delay
+  }
+
+  func page(containing rowIndex: Int) async throws -> CSVRowPage {
+    requestedRows.append(rowIndex)
+    if delay > .zero { try await Task.sleep(for: delay) }
+    guard let page = pages[rowIndex / 500] else { throw CSVPageStoreError.pageNotFound(rowIndex) }
+    return page
+  }
+
+  func close() async { isClosed = true }
 }
