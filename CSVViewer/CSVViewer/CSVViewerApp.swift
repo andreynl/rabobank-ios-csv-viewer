@@ -9,10 +9,10 @@ import SwiftUI
 
 @main
 struct CSVViewerApp: App {
-  @StateObject private var viewModel: CSVViewModel
+  @State private var viewModel: CSVViewModel
 
   init() {
-    _viewModel = StateObject(wrappedValue: AppContainer().makeCSVViewModel())
+    _viewModel = State(initialValue: AppContainer().makeCSVViewModel())
   }
 
   var body: some Scene {

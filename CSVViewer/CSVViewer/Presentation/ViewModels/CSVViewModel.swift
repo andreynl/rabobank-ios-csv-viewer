@@ -1,10 +1,11 @@
-import Combine
 import Foundation
+import Observation
 
+@Observable
 @MainActor
-final class CSVViewModel: ObservableObject {
-  @Published private(set) var state: CSVViewState = .idle
-  @Published private(set) var displayedFilename = ""
+final class CSVViewModel {
+  private(set) var state: CSVViewState = .idle
+  private(set) var displayedFilename = ""
 
   private let loadCSV: any LoadCSVUseCaseProtocol
   private var loadingTask: Task<Void, Never>?

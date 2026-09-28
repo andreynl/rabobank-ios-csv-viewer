@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-  @ObservedObject private var viewModel: CSVViewModel
+  private let viewModel: CSVViewModel
   @State private var isImporterPresented = false
 
   init(viewModel: CSVViewModel) {
