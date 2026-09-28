@@ -8,6 +8,7 @@ struct CSVTableView: View {
   var body: some View {
     VStack(spacing: 0) {
       status
+      pageLoadErrorBanner
       ScrollView(.horizontal, showsIndicators: true) {
         VStack(alignment: .leading, spacing: 0) {
           CSVLazyRowView(
@@ -43,6 +44,30 @@ struct CSVTableView: View {
     }
     .accessibilityIdentifier("csvTable")
     .task(id: viewModel.headers) { freezeWidthsIfPossible() }
+  }
+
+  @ViewBuilder
+  private var pageLoadErrorBanner: some View {
+    if let message = viewModel.pageLoadErrorMessage {
+      HStack(spacing: 12) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .foregroundStyle(.red)
+        Text(message)
+          .font(.caption)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        Button("Retry") {
+          Task { await viewModel.retryFailedPages() }
+        }
+        .buttonStyle(.bordered)
+        .accessibilityIdentifier("retryPageLoadButton")
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 8)
+      .background(Color.red.opacity(0.08))
+      .accessibilityElement(children: .contain)
+      .accessibilityAddTraits(.updatesFrequently)
+      .accessibilityIdentifier("pageLoadErrorBanner")
+    }
   }
 
   private var resolvedWidths: [CGFloat] {

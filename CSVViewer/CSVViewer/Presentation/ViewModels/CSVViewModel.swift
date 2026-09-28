@@ -11,6 +11,7 @@ final class CSVViewModel {
   private(set) var fractionCompleted: Double?
   private(set) var isComplete = false
   private(set) var pageSize = CSVPageConfiguration.defaultPageSize
+  private(set) var pageLoadErrorMessage: String?
 
   private let loadCSV: any LoadPagedCSVUseCaseProtocol
   private let maximumCachedPages: Int
@@ -19,6 +20,7 @@ final class CSVViewModel {
   private var pages: [Int: CSVRowPage] = [:]
   private var pageRecency: [Int] = []
   private var inFlightPages: Set<Int> = []
+  private var failedPageRows: [Int: Int] = [:]
   private var hasRequestedBundledSample = false
   private var requestGeneration = 0
 
@@ -65,13 +67,23 @@ final class CSVViewModel {
       let page = try await session.pages.page(containing: rowIndex)
       guard session === currentSession else { return }
       pages[page.index] = page
+      failedPageRows.removeValue(forKey: page.index)
+      updatePageLoadErrorMessage()
       markRecentlyUsed(page.index)
       evictPagesIfNeeded()
     } catch is CancellationError {
       return
     } catch {
       guard session === currentSession else { return }
-      state = .failure(Self.message(for: CSVLoadingError.storageFailed))
+      failedPageRows[pageIndex] = rowIndex
+      updatePageLoadErrorMessage()
+    }
+  }
+
+  func retryFailedPages() async {
+    let rowIndexes = failedPageRows.values.sorted()
+    for rowIndex in rowIndexes {
+      await loadPage(containing: rowIndex)
     }
   }
 
@@ -121,6 +133,8 @@ final class CSVViewModel {
     pages.removeAll(keepingCapacity: true)
     pageRecency.removeAll(keepingCapacity: true)
     inFlightPages.removeAll(keepingCapacity: true)
+    failedPageRows.removeAll(keepingCapacity: true)
+    pageLoadErrorMessage = nil
   }
 
   private func apply(_ progress: CSVLoadProgress) {
@@ -145,6 +159,12 @@ final class CSVViewModel {
       pageRecency.removeFirst()
       pages.removeValue(forKey: oldest)
     }
+  }
+
+  private func updatePageLoadErrorMessage() {
+    pageLoadErrorMessage = failedPageRows.isEmpty
+      ? nil
+      : "Some rows could not be loaded."
   }
 
   private static func message(for error: Error) -> String {

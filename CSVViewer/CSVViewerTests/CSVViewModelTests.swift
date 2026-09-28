@@ -90,6 +90,64 @@ struct CSVViewModelTests {
     #expect(await provider.requestedRows.filter { $0 == 0 }.count == 2)
   }
 
+  @Test func pageReadFailureKeepsLoadedState() async {
+    let provider = PageProviderStub(
+      pages: [:],
+      failuresBeforeSuccess: [0: 1]
+    )
+    let setup = await makeSetup(provider: provider)
+    setup.stream.yield(progress(headers: ["name"], rows: 1, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
+
+    await setup.viewModel.loadPage(containing: 0)
+
+    #expect(setup.viewModel.state == .loaded)
+    #expect(setup.viewModel.pageLoadErrorMessage != nil)
+  }
+
+  @Test func coalescesFailureAndRetriesPageOnce() async {
+    let page = CSVRowPage(index: 0, startRow: 0, rows: [["Theo"], ["Fiona"]])
+    let provider = PageProviderStub(
+      pages: [0: page],
+      delay: .milliseconds(20),
+      pageSize: 2,
+      failuresBeforeSuccess: [0: 1]
+    )
+    let setup = await makeSetup(provider: provider)
+    setup.stream.yield(progress(headers: ["name"], rows: 2, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
+
+    async let first: Void = setup.viewModel.loadPage(containing: 0)
+    async let second: Void = setup.viewModel.loadPage(containing: 1)
+    _ = await (first, second)
+    await setup.viewModel.retryFailedPages()
+
+    #expect(await provider.requestedRows.count == 2)
+    #expect(setup.viewModel.row(at: 0) == ["Theo"])
+    #expect(setup.viewModel.row(at: 1) == ["Fiona"])
+    #expect(setup.viewModel.pageLoadErrorMessage == nil)
+  }
+
+  @Test func newImportClearsPageReadFailure() async {
+    let provider = PageProviderStub(
+      pages: [:],
+      failuresBeforeSuccess: [0: 1]
+    )
+    let setup = await makeSetup(provider: provider)
+    setup.stream.yield(progress(headers: ["name"], rows: 1, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
+    await setup.viewModel.loadPage(containing: 0)
+    #expect(setup.viewModel.pageLoadErrorMessage != nil)
+
+    setup.viewModel.importFile(at: URL(fileURLWithPath: "/tmp/new.csv"))
+
+    #expect(setup.viewModel.state == .loading)
+    #expect(setup.viewModel.pageLoadErrorMessage == nil)
+  }
+
   @Test func replacementCancelsAndClosesPreviousSession() async {
     let useCase = ControllablePagedLoadUseCase()
     let oldProvider = PageProviderStub(pages: [:])
@@ -249,23 +307,31 @@ private actor PageProviderStub: CSVPageProviding {
   nonisolated let pageSize: Int
   private let pages: [Int: CSVRowPage]
   private let delay: Duration
+  private var failuresBeforeSuccess: [Int: Int]
   private(set) var requestedRows: [Int] = []
   private(set) var isClosed = false
 
   init(
     pages: [Int: CSVRowPage],
     delay: Duration = .zero,
-    pageSize: Int = CSVPageConfiguration.defaultPageSize
+    pageSize: Int = CSVPageConfiguration.defaultPageSize,
+    failuresBeforeSuccess: [Int: Int] = [:]
   ) {
     self.pages = pages
     self.delay = delay
     self.pageSize = pageSize
+    self.failuresBeforeSuccess = failuresBeforeSuccess
   }
 
   func page(containing rowIndex: Int) async throws -> CSVRowPage {
     requestedRows.append(rowIndex)
     if delay > .zero { try await Task.sleep(for: delay) }
-    guard let page = pages[rowIndex / pageSize] else { throw CSVPageStoreError.pageNotFound(rowIndex) }
+    let pageIndex = rowIndex / pageSize
+    if let remainingFailures = failuresBeforeSuccess[pageIndex], remainingFailures > 0 {
+      failuresBeforeSuccess[pageIndex] = remainingFailures - 1
+      throw CSVPageStoreError.persistenceFailed
+    }
+    guard let page = pages[pageIndex] else { throw CSVPageStoreError.pageNotFound(rowIndex) }
     return page
   }
 
