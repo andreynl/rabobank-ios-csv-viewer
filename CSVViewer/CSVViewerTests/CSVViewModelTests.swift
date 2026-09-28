@@ -55,6 +55,22 @@ struct CSVViewModelTests {
     #expect(setup.viewModel.row(at: 1) == ["Fiona"])
   }
 
+  @Test func usesProviderPageSizeForRequestCoalescing() async {
+    let page = CSVRowPage(index: 0, startRow: 0, rows: [["a"], ["b"]])
+    let provider = PageProviderStub(pages: [0: page], delay: .milliseconds(20), pageSize: 2)
+    let setup = await makeSetup(provider: provider)
+    setup.stream.yield(progress(headers: ["name"], rows: 2, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
+
+    async let first: Void = setup.viewModel.loadPage(containing: 0)
+    async let second: Void = setup.viewModel.loadPage(containing: 1)
+    _ = await (first, second)
+
+    #expect(setup.viewModel.pageSize == 2)
+    #expect(await provider.requestedRows.count == 1)
+  }
+
   @Test func evictedPageCanBeFetchedAgain() async {
     let pages = Dictionary(uniqueKeysWithValues: (0..<4).map { index in
       let start = index * 500
@@ -230,20 +246,26 @@ private final class ProgressStream: @unchecked Sendable {
 }
 
 private actor PageProviderStub: CSVPageProviding {
+  nonisolated let pageSize: Int
   private let pages: [Int: CSVRowPage]
   private let delay: Duration
   private(set) var requestedRows: [Int] = []
   private(set) var isClosed = false
 
-  init(pages: [Int: CSVRowPage], delay: Duration = .zero) {
+  init(
+    pages: [Int: CSVRowPage],
+    delay: Duration = .zero,
+    pageSize: Int = CSVPageConfiguration.defaultPageSize
+  ) {
     self.pages = pages
     self.delay = delay
+    self.pageSize = pageSize
   }
 
   func page(containing rowIndex: Int) async throws -> CSVRowPage {
     requestedRows.append(rowIndex)
     if delay > .zero { try await Task.sleep(for: delay) }
-    guard let page = pages[rowIndex / 500] else { throw CSVPageStoreError.pageNotFound(rowIndex) }
+    guard let page = pages[rowIndex / pageSize] else { throw CSVPageStoreError.pageNotFound(rowIndex) }
     return page
   }
 

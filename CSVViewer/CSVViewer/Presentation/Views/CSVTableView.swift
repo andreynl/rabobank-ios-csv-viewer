@@ -63,15 +63,20 @@ struct CSVTableView: View {
   }
 
   private func prefetch(after rowIndex: Int) async {
-    let offset = rowIndex % 500
-    guard offset >= 450 else { return }
-    await viewModel.loadPage(containing: min(rowIndex + 50, viewModel.availableRowCount - 1))
+    let prefetchDistance = max(viewModel.pageSize / 10, 1)
+    let offset = rowIndex % viewModel.pageSize
+    guard offset >= viewModel.pageSize - prefetchDistance else { return }
+    await viewModel.loadPage(containing: min(
+      rowIndex + prefetchDistance,
+      viewModel.availableRowCount - 1
+    ))
   }
 
   private func freezeWidthsIfPossible() {
     guard widths.isEmpty || widths.count != viewModel.headers.count else { return }
+    guard viewModel.availableRowCount > 0 else { return }
     let samples = (0..<min(viewModel.availableRowCount, 500)).compactMap { viewModel.row(at: $0) }
-    guard viewModel.availableRowCount == 0 || !samples.isEmpty else { return }
+    guard !samples.isEmpty else { return }
     widths = widthCalculator.widths(headers: viewModel.headers, sampleRows: samples)
   }
 }

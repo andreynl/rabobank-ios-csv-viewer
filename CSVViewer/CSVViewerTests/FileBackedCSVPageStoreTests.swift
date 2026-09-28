@@ -3,6 +3,15 @@ import Testing
 @testable import CSVViewer
 
 struct FileBackedCSVPageStoreTests {
+  @Test func rejectsInvalidConfiguration() {
+    #expect(throws: CSVPageStoreError.invalidConfiguration) {
+      try FileBackedCSVPageStore(directoryURL: temporaryDirectory(), pageSize: 0)
+    }
+    #expect(throws: CSVPageStoreError.invalidConfiguration) {
+      try FileBackedCSVPageStore(directoryURL: temporaryDirectory(), cacheCapacity: -1)
+    }
+  }
+
   @Test func persistsFullAndPartialPagesWithStableRanges() async throws {
     let directory = temporaryDirectory()
     let store = try FileBackedCSVPageStore(directoryURL: directory)

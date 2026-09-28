@@ -20,10 +20,17 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
 
   func loadSession(from source: CSVSource) async throws -> CSVLoadSession {
     let (url, needsSecurityScope) = try sourceURL(for: source)
-    let store = try pageStoreFactory()
+    let store: any CSVPageStore
+    do {
+      store = try pageStoreFactory()
+    } catch {
+      throw CSVLoadingError.storageFailed
+    }
     let taskController = SessionTaskController()
 
-    let updates = AsyncThrowingStream<CSVLoadProgress, Error> { continuation in
+    let updates = AsyncThrowingStream<CSVLoadProgress, Error>(
+      bufferingPolicy: .bufferingNewest(1)
+    ) { continuation in
       let task = Task.detached(priority: .userInitiated) {
         do {
           if needsSecurityScope {
@@ -153,9 +160,9 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
     }
 
     pendingRows.append(contentsOf: result.rows)
-    while pendingRows.count >= 500 {
-      let rows = Array(pendingRows.prefix(500))
-      pendingRows.removeFirst(500)
+    while pendingRows.count >= store.pageSize {
+      let rows = Array(pendingRows.prefix(store.pageSize))
+      pendingRows.removeFirst(store.pageSize)
       let page = try await store.append(rows)
       availableRowCount += page.rows.count
       continuation.yield(progress(
@@ -188,6 +195,10 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
 
   private func mapStreamingError(_ error: Error) -> Error {
     switch error {
+    case is CancellationError:
+      return error
+    case let loadingError as CSVLoadingError:
+      return loadingError
     case CSVParserError.invalidUTF8:
       return CSVLoadingError.invalidEncoding
     case is CSVParserError:
@@ -195,7 +206,7 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
     case is CSVPageStoreError:
       return CSVLoadingError.storageFailed
     default:
-      return error
+      return CSVLoadingError.readFailed
     }
   }
 

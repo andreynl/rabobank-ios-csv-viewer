@@ -10,6 +10,7 @@ final class CSVViewModel {
   private(set) var availableRowCount = 0
   private(set) var fractionCompleted: Double?
   private(set) var isComplete = false
+  private(set) var pageSize = CSVPageConfiguration.defaultPageSize
 
   private let loadCSV: any LoadPagedCSVUseCaseProtocol
   private let maximumCachedPages: Int
@@ -52,7 +53,7 @@ final class CSVViewModel {
 
   func loadPage(containing rowIndex: Int) async {
     guard rowIndex >= 0, rowIndex < availableRowCount, let session = currentSession else { return }
-    let pageIndex = rowIndex / 500
+    let pageIndex = rowIndex / pageSize
     if pages[pageIndex] != nil {
       markRecentlyUsed(pageIndex)
       return
@@ -89,6 +90,7 @@ final class CSVViewModel {
           return
         }
         currentSession = session
+        pageSize = session.pages.pageSize
         for try await progress in session.updates {
           guard generation == requestGeneration else { return }
           apply(progress)
@@ -115,6 +117,7 @@ final class CSVViewModel {
     availableRowCount = 0
     fractionCompleted = nil
     isComplete = false
+    pageSize = CSVPageConfiguration.defaultPageSize
     pages.removeAll(keepingCapacity: true)
     pageRecency.removeAll(keepingCapacity: true)
     inFlightPages.removeAll(keepingCapacity: true)

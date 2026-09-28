@@ -31,10 +31,13 @@ actor FileBackedCSVPageStore: CSVPageStore {
 
   init(
     directoryURL: URL,
-    pageSize: Int = 500,
+    pageSize: Int = CSVPageConfiguration.defaultPageSize,
     cacheCapacity: Int = 5,
     fileManager: FileManager = .default
   ) throws {
+    guard pageSize > 0, cacheCapacity >= 0 else {
+      throw CSVPageStoreError.invalidConfiguration
+    }
     self.directoryURL = directoryURL
     self.pageSize = pageSize
     self.cacheCapacity = cacheCapacity
@@ -66,17 +69,20 @@ actor FileBackedCSVPageStore: CSVPageStore {
       startRow: totalRowCount,
       rows: rows
     )
-    let encoder = PropertyListEncoder()
-    encoder.outputFormat = .binary
-    let data = try encoder.encode(StoredPage(page))
-    try Task.checkCancellation()
     let destinationURL = pageURL(for: page.index)
     do {
+      let encoder = PropertyListEncoder()
+      encoder.outputFormat = .binary
+      let data = try encoder.encode(StoredPage(page))
+      try Task.checkCancellation()
       try data.write(to: destinationURL, options: .atomic)
       try Task.checkCancellation()
+    } catch is CancellationError {
+      try? fileManager.removeItem(at: destinationURL)
+      throw CancellationError()
     } catch {
       try? fileManager.removeItem(at: destinationURL)
-      throw error
+      throw CSVPageStoreError.persistenceFailed
     }
 
     nextPageIndex += 1
@@ -109,8 +115,13 @@ actor FileBackedCSVPageStore: CSVPageStore {
       throw CSVPageStoreError.pageNotFound(rowIndex)
     }
 
-    let data = try Data(contentsOf: url)
-    let storedPage = try PropertyListDecoder().decode(StoredPage.self, from: data)
+    let storedPage: StoredPage
+    do {
+      let data = try Data(contentsOf: url)
+      storedPage = try PropertyListDecoder().decode(StoredPage.self, from: data)
+    } catch {
+      throw CSVPageStoreError.persistenceFailed
+    }
     let page = storedPage.page
     guard page.index == pageIndex,
           page.rows.indices.contains(rowIndex - page.startRow) else {

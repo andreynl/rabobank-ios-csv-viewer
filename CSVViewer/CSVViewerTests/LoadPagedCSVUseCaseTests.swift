@@ -55,6 +55,7 @@ private actor PagedRepositoryStub: PagedCSVRepository {
 }
 
 private actor EmptyPageProvider: CSVPageProviding {
+  nonisolated let pageSize = CSVPageConfiguration.defaultPageSize
   func page(containing rowIndex: Int) async throws -> CSVRowPage {
     throw CSVPageStoreError.pageNotFound(rowIndex)
   }

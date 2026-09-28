@@ -67,6 +67,7 @@ struct CSVLoadSessionTests {
 }
 
 private actor PageProviderStub: CSVPageProviding {
+  nonisolated let pageSize = CSVPageConfiguration.defaultPageSize
   private let page: CSVRowPage
 
   init(page: CSVRowPage) {

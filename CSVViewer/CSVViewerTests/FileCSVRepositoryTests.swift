@@ -18,7 +18,7 @@ struct FileCSVRepositoryTests {
     let session = try await repository.loadSession(from: .file(url))
     let updates = try await collect(session.updates)
 
-    #expect(updates.map(\.availableRowCount) == [0, 1, 1])
+    #expect(updates.last?.availableRowCount == 1)
     #expect(updates.last == CSVLoadProgress(
       headers: ["name", "count"],
       availableRowCount: 1,
@@ -44,7 +44,8 @@ struct FileCSVRepositoryTests {
     let session = try await repository.loadSession(from: .file(url))
     let updates = try await collect(session.updates)
 
-    #expect(updates.map(\.availableRowCount) == [0, 500, 501, 501])
+    #expect(updates.last?.availableRowCount == 501)
+    #expect(zip(updates, updates.dropFirst()).allSatisfy { $0.availableRowCount <= $1.availableRowCount })
     #expect(updates.allSatisfy { progress in
       guard let fraction = progress.fractionCompleted else { return false }
       return (0...1).contains(fraction)
@@ -67,7 +68,7 @@ struct FileCSVRepositoryTests {
     let session = try await repository.loadSession(from: .file(url))
     let updates = try await collect(session.updates)
 
-    #expect(updates.map(\.availableRowCount) == [0, 0])
+    #expect(updates.last?.availableRowCount == 0)
     #expect(updates.last?.isComplete == true)
     await #expect(throws: CSVPageStoreError.pageNotFound(0)) {
       try await session.pages.page(containing: 0)
@@ -94,6 +95,75 @@ struct FileCSVRepositoryTests {
       #expect(error as? CSVLoadingError == .malformedCSV)
     }
     #expect(!FileManager.default.fileExists(atPath: directory.path))
+  }
+
+  @Test func usesPageSizeExposedByStoreContract() async throws {
+    let url = try makeTemporaryFile(contents: Data("name\na\nb\nc\nd\ne".utf8))
+    let directory = temporaryDirectory()
+    defer {
+      try? FileManager.default.removeItem(at: url)
+      try? FileManager.default.removeItem(at: directory)
+    }
+    let repository = FileCSVRepository(
+      urlAccess: PassthroughSecurityScopedAccess(),
+      pageStoreFactory: {
+        try FileBackedCSVPageStore(directoryURL: directory, pageSize: 2)
+      }
+    )
+
+    let session = try await repository.loadSession(from: .file(url))
+    _ = try await collect(session.updates)
+
+    #expect(session.pages.pageSize == 2)
+    #expect(try await session.pages.page(containing: 3).index == 1)
+    #expect(try await session.pages.page(containing: 4).rows == [["e"]])
+  }
+
+  @Test func keepsOnlyNewestProgressWhenConsumerStartsLate() async throws {
+    let rows = (0..<1_501).map { "name-\($0)" }.joined(separator: "\n")
+    let url = try makeTemporaryFile(contents: Data("name\n\(rows)".utf8))
+    let directory = temporaryDirectory()
+    defer {
+      try? FileManager.default.removeItem(at: url)
+      try? FileManager.default.removeItem(at: directory)
+    }
+    let repository = FileCSVRepository(
+      urlAccess: PassthroughSecurityScopedAccess(),
+      pageStoreFactory: { try FileBackedCSVPageStore(directoryURL: directory) }
+    )
+
+    let session = try await repository.loadSession(from: .file(url))
+    try await Task.sleep(for: .milliseconds(50))
+    let updates = try await collect(session.updates)
+
+    #expect(updates == [CSVLoadProgress(
+      headers: ["name"],
+      availableRowCount: 1_501,
+      fractionCompleted: 1,
+      isComplete: true
+    )])
+  }
+
+  @Test func mapsFileReadFailure() async throws {
+    let repository = FileCSVRepository(urlAccess: PassthroughSecurityScopedAccess())
+    let missingURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString)
+    let session = try await repository.loadSession(from: .file(missingURL))
+
+    await expectLoadingError(.readFailed) {
+      try await collect(session.updates)
+    }
+  }
+
+  @Test func mapsPageStoreCreationFailure() async {
+    let repository = FileCSVRepository(
+      urlAccess: PassthroughSecurityScopedAccess(),
+      pageStoreFactory: { throw RepositoryTestError.expected }
+    )
+
+    await expectLoadingError(.storageFailed) {
+      try await repository.loadSession(from: .file(URL(fileURLWithPath: "/tmp/file.csv")))
+    }
   }
 
   @Test func cancellationReleasesSecurityScopedAccessAndClosesStore() async throws {
@@ -295,6 +365,7 @@ private final class ResourceAccessorSpy: URLResourceAccessing, @unchecked Sendab
 }
 
 private actor BlockingPageStore: CSVPageStore {
+  nonisolated let pageSize = CSVPageConfiguration.defaultPageSize
   private(set) var isClosed = false
 
   func append(_ rows: [[String]]) async throws -> CSVRowPage {
@@ -314,6 +385,7 @@ private actor BlockingPageStore: CSVPageStore {
 }
 
 private actor FailingPageStore: CSVPageStore {
+  nonisolated let pageSize = CSVPageConfiguration.defaultPageSize
   private(set) var isClosed = false
 
   func append(_ rows: [[String]]) async throws -> CSVRowPage {
