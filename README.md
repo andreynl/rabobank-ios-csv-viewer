@@ -2,7 +2,13 @@
 
 CSV Viewer is a small SwiftUI application created for the Rabobank Team Native assignment. It displays the bundled `issues.csv` at launch and can import another CSV file through the system file picker.
 
-![Rabobank CSV Viewer launch artwork](CSVViewer/CSVViewer/Assets.xcassets/LaunchArtwork.imageset/launch-artwork.png)
+<p align="center">
+  <img
+    src="CSVViewer/CSVViewer/Assets.xcassets/LaunchArtwork.imageset/launch-artwork.png"
+    alt="Rabobank CSV Viewer launch artwork"
+    height="420"
+  />
+</p>
 
 ## Requirements
 
