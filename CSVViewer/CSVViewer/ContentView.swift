@@ -16,16 +16,8 @@ struct ContentView: View {
         case .idle, .loading:
           ProgressView("Loading CSV…")
             .accessibilityIdentifier("csvLoadingState")
-        case .streaming:
-          ProgressView("Loaded \(viewModel.availableRowCount) rows…")
-            .accessibilityIdentifier("csvLoadingState")
-        case .loaded:
-          VStack(spacing: 8) {
-            Text("\(viewModel.availableRowCount) rows")
-              .font(.headline)
-            Text("Ready to display")
-              .foregroundStyle(.secondary)
-          }
+        case .streaming, .loaded:
+          CSVTableView(viewModel: viewModel)
         case .empty:
           EmptyCSVView()
         case let .failure(message):
