@@ -63,23 +63,28 @@ CSVViewer
     └── Views
 ```
 
-- **Domain** defines the generic CSV document, data-source types, repository contract, errors, and loading use case. It has no SwiftUI or concrete filesystem dependency.
-- **Data** implements CSV parsing, file reading, error mapping, and balanced security-scoped URL access.
-- **Presentation** contains the main-actor view model and state-driven SwiftUI views.
+- **Domain** defines the progressive loading session, page-provider contract, data-source types, errors, and loading use case. It has no SwiftUI or concrete filesystem dependency.
+- **Data** incrementally parses 64 KiB chunks, writes 500-row pages to a temporary store, maps errors, and balances security-scoped URL access.
+- **Presentation** contains the main-actor view model, a bounded three-page cache, and lazy SwiftUI rows.
 - **App** creates and injects the concrete dependency graph.
 
 These are logical modules rather than separate framework targets. The protocol boundaries and one-way dependencies keep the code easy to test and allow each layer to move into its own target later if the product grows. For this assignment, logical modules demonstrate that scaling path without adding unnecessary build-system overhead.
 
 ## Data Flow
 
-`ContentView` asks `CSVViewModel` to perform the initial load once. The view model calls `LoadCSVUseCase`, which depends on the `CSVRepository` protocol. `FileCSVRepository` reads and parses the selected source in detached user-initiated work, then the main-actor view model publishes one of these states:
+`ContentView` asks `CSVViewModel` to perform the initial load once. The view model calls `LoadPagedCSVUseCase`, which depends on `PagedCSVRepository`. `FileCSVRepository` immediately returns a session, then reads and parses the source incrementally in detached user-initiated work.
+
+Completed rows are persisted as file-backed pages. Only the visible and nearby pages are loaded through the view model's bounded LRU cache, while `LazyVStack` creates only rows needed by the current scroll position. This same path is used for small and large files.
+
+The view model publishes these states:
 
 - loading
-- loaded document
+- streaming rows
+- loaded index
 - empty document
 - failure with a user-facing message
 
-Starting a newer import cancels the previous task and advances a request generation. This prevents a slow older result from replacing the newer document even if the underlying operation does not stop immediately.
+Starting a newer import cancels the previous session, closes its page store, and advances a request generation. This prevents a slow older result from replacing the newer file. Temporary page directories are also removed after cancellation or failure.
 
 ## CSV Support
 
@@ -100,19 +105,18 @@ The first record is the header. Short rows are padded with empty values. Rows wi
 
 The project uses Swift Testing for unit and integration tests and XCTest for UI coverage.
 
-- Parser tests cover valid syntax, multiline data, BOM handling, row normalization, malformed input, and encoding errors.
-- Repository tests cover real file parsing, error mapping, and security-scoped access cleanup after success and failure.
+- Streaming-parser tests cover chunk boundaries, valid syntax, multiline data, BOM handling, row normalization, malformed input, and encoding errors.
+- Page-store tests cover persistence, bounded memory caching, reloads, cleanup, and cancellation.
+- Repository tests cover progressive page publication, error mapping, cancellation, and security-scoped access cleanup.
 - Use-case tests verify repository delegation and error propagation.
-- View-model tests cover state transitions, one-time initial loading, imported-file replacement, and stale-result protection.
+- View-model tests cover progressive state, page-request coalescing, bounded presentation caching, replacement, and stale-result protection.
 - The composition test loads the bundled sample through the real dependency graph.
-- UI tests verify launch, the import action, compact table layout, horizontal scrolling, and compact navigation styling.
+- UI tests verify launch, the import action, compact lazy-table layout, horizontal scrolling, and compact navigation styling.
 
 ## Current Limitations
 
 - The delimiter is fixed to a comma.
 - Files must use UTF-8 encoding.
-- Imported documents remain in memory only and are not restored on the next launch.
+- Imported documents and their temporary page stores are not restored on the next launch.
 - The viewer does not edit, sort, filter, or infer column types.
-- The table renders the loaded document in memory rather than virtualizing very large datasets.
-
-Possible next steps include delimiter configuration, streaming for very large files, filtering and sorting, persistent security-scoped bookmarks, and extracting logical layers into separate targets when independent build boundaries become useful.
+Possible next steps include delimiter configuration, filtering and sorting, persistent security-scoped bookmarks, and extracting logical layers into separate targets when independent build boundaries become useful.

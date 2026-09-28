@@ -1,21 +1,18 @@
 import Foundation
 import Synchronization
 
-struct FileCSVRepository: CSVRepository, PagedCSVRepository, Sendable {
+struct FileCSVRepository: PagedCSVRepository, Sendable {
   typealias PageStoreFactory = @Sendable () throws -> any CSVPageStore
 
-  private let parser: any CSVParsing
   private let bundle: Bundle
   private let urlAccess: any SecurityScopedURLAccessing
   private let pageStoreFactory: PageStoreFactory
 
   init(
-    parser: any CSVParsing,
     bundle: Bundle = .main,
     urlAccess: any SecurityScopedURLAccessing = SecurityScopedURLAccess(),
     pageStoreFactory: @escaping PageStoreFactory = FileCSVRepository.makeDefaultPageStore
   ) {
-    self.parser = parser
     self.bundle = bundle
     self.urlAccess = urlAccess
     self.pageStoreFactory = pageStoreFactory
@@ -53,38 +50,6 @@ struct FileCSVRepository: CSVRepository, PagedCSVRepository, Sendable {
     return CSVLoadSession(updates: updates, pages: store) {
       taskController.cancel()
       Task { await store.close() }
-    }
-  }
-
-  func load(from source: CSVSource) async throws -> CSVDocument {
-    switch source {
-    case let .bundled(name, fileExtension):
-      guard let url = bundle.url(forResource: name, withExtension: fileExtension) else {
-        throw CSVLoadingError.resourceNotFound
-      }
-      return try await readAndParse(url)
-
-    case let .file(url):
-      return try await urlAccess.withAccess(to: url) { scopedURL in
-        try await readAndParse(scopedURL)
-      }
-    }
-  }
-
-  private func readAndParse(_ url: URL) async throws -> CSVDocument {
-    do {
-      return try await Task.detached(priority: .userInitiated) { [parser] in
-        let data = try Data(contentsOf: url)
-        return try parser.parse(data: data)
-      }.value
-    } catch CSVParserError.invalidUTF8 {
-      throw CSVLoadingError.invalidEncoding
-    } catch is CSVParserError {
-      throw CSVLoadingError.malformedCSV
-    } catch let error as CSVLoadingError {
-      throw error
-    } catch {
-      throw CSVLoadingError.readFailed
     }
   }
 

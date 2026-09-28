@@ -11,7 +11,6 @@ struct FileCSVRepositoryTests {
       try? FileManager.default.removeItem(at: directory)
     }
     let repository = FileCSVRepository(
-      parser: CSVParser(),
       urlAccess: PassthroughSecurityScopedAccess(),
       pageStoreFactory: { try FileBackedCSVPageStore(directoryURL: directory) }
     )
@@ -38,7 +37,6 @@ struct FileCSVRepositoryTests {
       try? FileManager.default.removeItem(at: directory)
     }
     let repository = FileCSVRepository(
-      parser: CSVParser(),
       urlAccess: PassthroughSecurityScopedAccess(),
       pageStoreFactory: { try FileBackedCSVPageStore(directoryURL: directory) }
     )
@@ -62,7 +60,6 @@ struct FileCSVRepositoryTests {
       try? FileManager.default.removeItem(at: directory)
     }
     let repository = FileCSVRepository(
-      parser: CSVParser(),
       urlAccess: PassthroughSecurityScopedAccess(),
       pageStoreFactory: { try FileBackedCSVPageStore(directoryURL: directory) }
     )
@@ -84,7 +81,6 @@ struct FileCSVRepositoryTests {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: url) }
     let repository = FileCSVRepository(
-      parser: CSVParser(),
       urlAccess: PassthroughSecurityScopedAccess(),
       pageStoreFactory: { try FileBackedCSVPageStore(directoryURL: directory) }
     )
@@ -107,7 +103,6 @@ struct FileCSVRepositoryTests {
     let resourceAccessor = ResourceAccessorSpy(startResult: true)
     let store = BlockingPageStore()
     let repository = FileCSVRepository(
-      parser: CSVParser(),
       urlAccess: SecurityScopedURLAccess(resourceAccessor: resourceAccessor),
       pageStoreFactory: { store }
     )
@@ -135,7 +130,6 @@ struct FileCSVRepositoryTests {
     defer { try? FileManager.default.removeItem(at: url) }
     let store = FailingPageStore()
     let repository = FileCSVRepository(
-      parser: CSVParser(),
       urlAccess: PassthroughSecurityScopedAccess(),
       pageStoreFactory: { store }
     )
@@ -151,27 +145,13 @@ struct FileCSVRepositoryTests {
     #expect(await store.isClosed)
   }
 
-  @Test func loadsAndParsesImportedFile() async throws {
-    let url = try makeTemporaryFile(contents: Data("name,count\nTheo,5".utf8))
-    defer { try? FileManager.default.removeItem(at: url) }
-    let repository = FileCSVRepository(
-      parser: CSVParser(),
-      urlAccess: PassthroughSecurityScopedAccess()
-    )
-
-    let document = try await repository.load(from: .file(url))
-
-    #expect(document == CSVDocument(headers: ["name", "count"], rows: [["Theo", "5"]]))
-  }
-
   @Test func mapsMissingBundledResource() async {
     let repository = FileCSVRepository(
-      parser: CSVParser(),
       urlAccess: PassthroughSecurityScopedAccess()
     )
 
     await expectLoadingError(.resourceNotFound) {
-      try await repository.load(from: .bundled(name: UUID().uuidString, extension: "csv"))
+      try await repository.loadSession(from: .bundled(name: UUID().uuidString, extension: "csv"))
     }
   }
 
@@ -179,12 +159,12 @@ struct FileCSVRepositoryTests {
     let url = try makeTemporaryFile(contents: Data([0xFF, 0xFE]))
     defer { try? FileManager.default.removeItem(at: url) }
     let repository = FileCSVRepository(
-      parser: CSVParser(),
       urlAccess: PassthroughSecurityScopedAccess()
     )
 
+    let session = try await repository.loadSession(from: .file(url))
     await expectLoadingError(.invalidEncoding) {
-      try await repository.load(from: .file(url))
+      try await collect(session.updates)
     }
   }
 
@@ -192,12 +172,12 @@ struct FileCSVRepositoryTests {
     let url = try makeTemporaryFile(contents: Data("name,note\nTheo,\"unfinished".utf8))
     defer { try? FileManager.default.removeItem(at: url) }
     let repository = FileCSVRepository(
-      parser: CSVParser(),
       urlAccess: PassthroughSecurityScopedAccess()
     )
 
+    let session = try await repository.loadSession(from: .file(url))
     await expectLoadingError(.malformedCSV) {
-      try await repository.load(from: .file(url))
+      try await collect(session.updates)
     }
   }
 

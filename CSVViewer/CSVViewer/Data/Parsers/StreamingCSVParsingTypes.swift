@@ -1,9 +1,3 @@
-import Foundation
-
-protocol CSVParsing: Sendable {
-  func parse(data: Data) throws -> CSVDocument
-}
-
 struct CSVParserChunkResult: Equatable, Sendable {
   let headers: [String]?
   let rows: [[String]]
