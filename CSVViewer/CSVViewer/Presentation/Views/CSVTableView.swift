@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CSVTableView: View {
   let document: CSVDocument
+  private let cellFormatter = CSVCellFormatter()
 
   var body: some View {
     ScrollView([.horizontal, .vertical], showsIndicators: true) {
@@ -21,7 +22,7 @@ struct CSVTableView: View {
   private func row(_ values: [String], isHeader: Bool) -> some View {
     GridRow {
       ForEach(Array(values.enumerated()), id: \.offset) { _, value in
-        Text(value)
+        Text(cellFormatter.string(from: value))
           .font(isHeader ? .headline : .body)
           .lineLimit(1)
           .fixedSize(horizontal: true, vertical: false)
