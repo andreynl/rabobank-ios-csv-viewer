@@ -65,6 +65,8 @@ final class CSVViewModel {
       return "The file is not valid UTF-8 text."
     case .malformedCSV:
       return "The file contains malformed CSV data."
+    case .storageFailed:
+      return "The CSV data could not be stored temporarily."
     case nil:
       return "The CSV file could not be loaded."
     }

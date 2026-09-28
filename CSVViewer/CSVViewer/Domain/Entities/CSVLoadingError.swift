@@ -4,4 +4,5 @@ enum CSVLoadingError: Error, Equatable, Sendable {
   case readFailed
   case invalidEncoding
   case malformedCSV
+  case storageFailed
 }
