@@ -96,6 +96,30 @@ struct StreamingCSVParserTests {
     )
   }
 
+  @Test func rejectsQuoteInsideUnquotedField() {
+    expectParserError(chunks: [Data("name\nTh\"eo".utf8)])
+  }
+
+  @Test func rejectsCharactersAfterClosingQuote() {
+    expectParserError(chunks: [Data("name\n\"Theo\"junk".utf8)])
+  }
+
+  @Test func rejectsCharactersAfterClosingQuoteAcrossChunks() {
+    expectParserError(chunks: [
+      Data("name\n\"Theo\"".utf8),
+      Data("junk".utf8),
+    ])
+  }
+
+  @Test func acceptsEscapedQuoteAcrossChunks() throws {
+    let result = try parse(chunks: [
+      Data("name\n\"a\"".utf8),
+      Data("\"b\"".utf8),
+    ])
+
+    #expect(result.rows == [["a\"b"]])
+  }
+
   @Test func lateWideRowUsesGlobalRowNumber() {
     expectError(
       .rowHasTooManyFields(row: 2, expected: 2, actual: 3),
@@ -133,6 +157,15 @@ struct StreamingCSVParserTests {
       Issue.record("Expected \(expected) to be thrown")
     } catch {
       #expect(error as? CSVParserError == expected)
+    }
+  }
+
+  private func expectParserError(chunks: [Data]) {
+    do {
+      _ = try parse(chunks: chunks)
+      Issue.record("Expected malformed quoted field to throw")
+    } catch {
+      #expect(error is CSVParserError)
     }
   }
 

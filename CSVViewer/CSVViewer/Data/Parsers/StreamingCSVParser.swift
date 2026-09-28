@@ -1,6 +1,12 @@
 import Foundation
 
 struct StreamingCSVParser: Sendable {
+  private enum FieldState: Equatable, Sendable {
+    case unquoted
+    case quoted
+    case afterClosingQuote
+  }
+
   private static let utf8BOM: [UInt8] = [0xEF, 0xBB, 0xBF]
 
   private var headers: [String]?
@@ -8,8 +14,7 @@ struct StreamingCSVParser: Sendable {
   private var fieldBytes: [UInt8] = []
   private var bomCandidate: [UInt8] = []
   private var dataRowCount = 0
-  private var isInsideQuotes = false
-  private var hasPendingQuote = false
+  private var fieldState = FieldState.unquoted
   private var shouldSkipLineFeed = false
   private var hasResolvedBOM = false
   private var hasInputSinceRecordSeparator = false
@@ -52,14 +57,10 @@ struct StreamingCSVParser: Sendable {
       bomCandidate.removeAll(keepingCapacity: false)
     }
 
-    if hasPendingQuote {
-      hasPendingQuote = false
-      isInsideQuotes = false
-    }
-
-    guard !isInsideQuotes else {
+    guard fieldState != .quoted else {
       throw CSVParserError.unterminatedQuotedField
     }
+    fieldState = .unquoted
 
     if hasInputSinceRecordSeparator {
       try completeRecord(headers: &emittedHeaders, rows: &emittedRows)
@@ -102,22 +103,11 @@ struct StreamingCSVParser: Sendable {
       }
     }
 
-    if isInsideQuotes {
-      if hasPendingQuote {
-        hasPendingQuote = false
-        if byte == Self.quote {
-          fieldBytes.append(Self.quote)
-          hasInputSinceRecordSeparator = true
-          return
-        }
-        isInsideQuotes = false
-        try process(byte, headers: &emittedHeaders, rows: &emittedRows)
-        return
-      }
-
+    switch fieldState {
+    case .quoted:
       switch byte {
       case Self.quote:
-        hasPendingQuote = true
+        fieldState = .afterClosingQuote
       case Self.carriageReturn:
         fieldBytes.append(Self.lineFeed)
         shouldSkipLineFeed = true
@@ -126,26 +116,54 @@ struct StreamingCSVParser: Sendable {
       }
       hasInputSinceRecordSeparator = true
       return
+    case .afterClosingQuote:
+      switch byte {
+      case Self.quote:
+        fieldBytes.append(Self.quote)
+        fieldState = .quoted
+        hasInputSinceRecordSeparator = true
+      case Self.comma:
+        try completeField()
+        fieldState = .unquoted
+        hasInputSinceRecordSeparator = true
+      case Self.carriageReturn:
+        try completeRecord(headers: &emittedHeaders, rows: &emittedRows)
+        fieldState = .unquoted
+        shouldSkipLineFeed = true
+        hasInputSinceRecordSeparator = false
+      case Self.lineFeed:
+        try completeRecord(headers: &emittedHeaders, rows: &emittedRows)
+        fieldState = .unquoted
+        hasInputSinceRecordSeparator = false
+      default:
+        throw CSVParserError.unexpectedCharacterAfterClosingQuote(row: currentRowNumber)
+      }
+    case .unquoted:
+      switch byte {
+      case Self.quote where fieldBytes.isEmpty:
+        fieldState = .quoted
+        hasInputSinceRecordSeparator = true
+      case Self.quote:
+        throw CSVParserError.invalidQuote(row: currentRowNumber)
+      case Self.comma:
+        try completeField()
+        hasInputSinceRecordSeparator = true
+      case Self.carriageReturn:
+        try completeRecord(headers: &emittedHeaders, rows: &emittedRows)
+        shouldSkipLineFeed = true
+        hasInputSinceRecordSeparator = false
+      case Self.lineFeed:
+        try completeRecord(headers: &emittedHeaders, rows: &emittedRows)
+        hasInputSinceRecordSeparator = false
+      default:
+        fieldBytes.append(byte)
+        hasInputSinceRecordSeparator = true
+      }
     }
+  }
 
-    switch byte {
-    case Self.quote where fieldBytes.isEmpty:
-      isInsideQuotes = true
-      hasInputSinceRecordSeparator = true
-    case Self.comma:
-      try completeField()
-      hasInputSinceRecordSeparator = true
-    case Self.carriageReturn:
-      try completeRecord(headers: &emittedHeaders, rows: &emittedRows)
-      shouldSkipLineFeed = true
-      hasInputSinceRecordSeparator = false
-    case Self.lineFeed:
-      try completeRecord(headers: &emittedHeaders, rows: &emittedRows)
-      hasInputSinceRecordSeparator = false
-    default:
-      fieldBytes.append(byte)
-      hasInputSinceRecordSeparator = true
-    }
+  private var currentRowNumber: Int {
+    dataRowCount + 1
   }
 
   private mutating func completeField() throws {
