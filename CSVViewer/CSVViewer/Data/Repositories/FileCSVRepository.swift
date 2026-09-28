@@ -84,7 +84,7 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
 
     var streamingParser = StreamingCSVParser()
     var headers: [String] = []
-    var pendingRows: [[String]] = []
+    var pendingRows = CSVRowBuffer(pageSize: store.pageSize)
     var availableRowCount = 0
     var bytesRead = 0
 
@@ -116,10 +116,10 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
       continuation: continuation
     )
 
-    if !pendingRows.isEmpty {
-      let page = try await store.append(pendingRows)
+    let remainingRows = pendingRows.takeRemaining()
+    if !remainingRows.isEmpty {
+      let page = try await store.append(remainingRows)
       availableRowCount += page.rows.count
-      pendingRows.removeAll(keepingCapacity: false)
       continuation.yield(progress(
         headers: headers,
         rowCount: availableRowCount,
@@ -144,7 +144,7 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
     fileSize: Int,
     bytesRead: Int,
     headers: inout [String],
-    pendingRows: inout [[String]],
+    pendingRows: inout CSVRowBuffer,
     availableRowCount: inout Int,
     continuation: AsyncThrowingStream<CSVLoadProgress, Error>.Continuation
   ) async throws {
@@ -160,9 +160,7 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
     }
 
     pendingRows.append(contentsOf: result.rows)
-    while pendingRows.count >= store.pageSize {
-      let rows = Array(pendingRows.prefix(store.pageSize))
-      pendingRows.removeFirst(store.pageSize)
+    while let rows = pendingRows.nextFullPage() {
       let page = try await store.append(rows)
       availableRowCount += page.rows.count
       continuation.yield(progress(
