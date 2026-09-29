@@ -174,6 +174,7 @@ final class CSVViewModel {
     case .readFailed: "The file could not be read."
     case .invalidEncoding: "The file is not valid UTF-8 text."
     case .malformedCSV: "The file contains malformed CSV data."
+    case .resourceLimitExceeded: "The CSV contains a field, row, or page that is too large."
     case .storageFailed: "The CSV data could not be stored temporarily."
     case nil: "The CSV file could not be loaded."
     }

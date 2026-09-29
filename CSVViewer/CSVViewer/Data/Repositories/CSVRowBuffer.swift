@@ -3,8 +3,6 @@ struct CSVRowBuffer {
   private let maximumPageBytes: Int
   private var rows: [[String]] = []
   private var bufferedBytes = 0
-  private var compatibilityPages: [[[String]]] = []
-  private var compatibilityPageIndex = 0
 
   init(
     pageSize: Int,
@@ -39,24 +37,6 @@ struct CSVRowBuffer {
 
   mutating func takeRemaining() -> [[String]] {
     takeBufferedRows()
-  }
-
-  mutating func append(contentsOf newRows: [[String]]) {
-    for row in newRows {
-      if let page = try? append(row) {
-        compatibilityPages.append(page)
-      }
-    }
-  }
-
-  mutating func nextFullPage() -> [[String]]? {
-    guard compatibilityPages.indices.contains(compatibilityPageIndex) else {
-      compatibilityPages.removeAll(keepingCapacity: true)
-      compatibilityPageIndex = 0
-      return nil
-    }
-    defer { compatibilityPageIndex += 1 }
-    return compatibilityPages[compatibilityPageIndex]
   }
 
   private mutating func takeBufferedRows() -> [[String]] {

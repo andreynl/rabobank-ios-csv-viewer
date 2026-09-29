@@ -182,6 +182,19 @@ struct CSVViewModelTests {
     await waitUntil { viewModel.state == .failure("The CSV data could not be stored temporarily.") }
   }
 
+  @Test func resourceLimitFailureUsesReadableState() async {
+    let useCase = ControllablePagedLoadUseCase()
+    let viewModel = CSVViewModel(loadCSV: useCase)
+    let source = CSVSource.bundled(name: "issues", extension: "csv")
+    viewModel.loadBundledSampleIfNeeded()
+    await useCase.waitUntilRequested(source)
+    await useCase.fail(source, with: CSVLoadingError.resourceLimitExceeded)
+
+    await waitUntil {
+      viewModel.state == .failure("The CSV contains a field, row, or page that is too large.")
+    }
+  }
+
   @Test func staleFailureCannotOverwriteNewerImport() async {
     let useCase = ControllablePagedLoadUseCase()
     let viewModel = CSVViewModel(loadCSV: useCase)

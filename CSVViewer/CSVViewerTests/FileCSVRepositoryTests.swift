@@ -251,6 +251,56 @@ struct FileCSVRepositoryTests {
     }
   }
 
+  @Test func mapsFieldByteLimitFailure() async throws {
+    let url = try makeTemporaryFile(contents: Data("name\nabcde".utf8))
+    defer { try? FileManager.default.removeItem(at: url) }
+    let repository = FileCSVRepository(
+      urlAccess: PassthroughSecurityScopedAccess(),
+      limits: CSVResourceLimits(
+        maximumFieldBytes: 4,
+        maximumRowBytes: 16,
+        maximumPageBytes: 32
+      )
+    )
+
+    let session = try await repository.loadSession(from: .file(url))
+    await expectLoadingError(.resourceLimitExceeded) {
+      try await collect(session.updates)
+    }
+  }
+
+  @Test func mapsRowByteLimitFailure() async throws {
+    let url = try makeTemporaryFile(contents: Data("a,b\nx,y,z".utf8))
+    defer { try? FileManager.default.removeItem(at: url) }
+    let repository = FileCSVRepository(
+      urlAccess: PassthroughSecurityScopedAccess(),
+      limits: CSVResourceLimits(
+        maximumFieldBytes: 2,
+        maximumRowBytes: 4,
+        maximumPageBytes: 8
+      )
+    )
+
+    let session = try await repository.loadSession(from: .file(url))
+    await expectLoadingError(.resourceLimitExceeded) {
+      try await collect(session.updates)
+    }
+  }
+
+  @Test func mapsEncodedPageLimitFailure() async throws {
+    let url = try makeTemporaryFile(contents: Data("name\nTheo".utf8))
+    defer { try? FileManager.default.removeItem(at: url) }
+    let repository = FileCSVRepository(
+      urlAccess: PassthroughSecurityScopedAccess(),
+      pageStoreFactory: { ResourceLimitedPageStore() }
+    )
+
+    let session = try await repository.loadSession(from: .file(url))
+    await expectLoadingError(.resourceLimitExceeded) {
+      try await collect(session.updates)
+    }
+  }
+
   @Test func releasesSecurityScopedAccessAfterSuccess() async throws {
     let resourceAccessor = ResourceAccessorSpy(startResult: true)
     let access = SecurityScopedURLAccess(resourceAccessor: resourceAccessor)
@@ -382,6 +432,22 @@ private actor BlockingPageStore: CSVPageStore {
   func close() async {
     isClosed = true
   }
+}
+
+private actor ResourceLimitedPageStore: CSVPageStore {
+  nonisolated let pageSize = CSVPageConfiguration.defaultPageSize
+
+  func append(_ rows: [[String]]) async throws -> CSVRowPage {
+    throw CSVPageStoreError.encodedPageTooLarge(maximumBytes: 8, actualBytes: 9)
+  }
+
+  func finish() async throws {}
+
+  func page(containing rowIndex: Int) async throws -> CSVRowPage {
+    throw CSVPageStoreError.pageNotFound(rowIndex)
+  }
+
+  func close() async {}
 }
 
 private actor FailingPageStore: CSVPageStore {

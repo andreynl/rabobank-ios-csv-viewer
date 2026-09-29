@@ -6,16 +6,21 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
 
   private let bundle: Bundle
   private let urlAccess: any SecurityScopedURLAccessing
+  private let limits: CSVResourceLimits
   private let pageStoreFactory: PageStoreFactory
 
   init(
     bundle: Bundle = .main,
     urlAccess: any SecurityScopedURLAccessing = SecurityScopedURLAccess(),
-    pageStoreFactory: @escaping PageStoreFactory = FileCSVRepository.makeDefaultPageStore
+    limits: CSVResourceLimits = .default,
+    pageStoreFactory: PageStoreFactory? = nil
   ) {
     self.bundle = bundle
     self.urlAccess = urlAccess
-    self.pageStoreFactory = pageStoreFactory
+    self.limits = limits
+    self.pageStoreFactory = pageStoreFactory ?? {
+      try FileCSVRepository.makeDefaultPageStore(maximumPageBytes: limits.maximumPageBytes)
+    }
   }
 
   func loadSession(from source: CSVSource) async throws -> CSVLoadSession {
@@ -82,9 +87,12 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
 
-    var streamingParser = StreamingCSVParser()
+    var streamingParser = StreamingCSVParser(limits: limits)
     var headers: [String] = []
-    var pendingRows = CSVRowBuffer(pageSize: store.pageSize)
+    var pendingRows = CSVRowBuffer(
+      pageSize: store.pageSize,
+      maximumPageBytes: limits.maximumPageBytes
+    )
     var availableRowCount = 0
     var bytesRead = 0
 
@@ -159,17 +167,18 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
       ))
     }
 
-    pendingRows.append(contentsOf: result.rows)
-    while let rows = pendingRows.nextFullPage() {
-      let page = try await store.append(rows)
-      availableRowCount += page.rows.count
-      continuation.yield(progress(
-        headers: headers,
-        rowCount: availableRowCount,
-        bytesRead: bytesRead,
-        fileSize: fileSize,
-        isComplete: false
-      ))
+    for row in result.rows {
+      if let rows = try pendingRows.append(row) {
+        let page = try await store.append(rows)
+        availableRowCount += page.rows.count
+        continuation.yield(progress(
+          headers: headers,
+          rowCount: availableRowCount,
+          bytesRead: bytesRead,
+          fileSize: fileSize,
+          isComplete: false
+        ))
+      }
     }
   }
 
@@ -197,10 +206,14 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
       return error
     case let loadingError as CSVLoadingError:
       return loadingError
+    case CSVParserError.fieldTooLarge, CSVParserError.rowTooLarge:
+      return CSVLoadingError.resourceLimitExceeded
     case CSVParserError.invalidUTF8:
       return CSVLoadingError.invalidEncoding
     case is CSVParserError:
       return CSVLoadingError.malformedCSV
+    case CSVPageStoreError.encodedPageTooLarge, is CSVRowBufferError:
+      return CSVLoadingError.resourceLimitExceeded
     case is CSVPageStoreError:
       return CSVLoadingError.storageFailed
     default:
@@ -208,7 +221,7 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
     }
   }
 
-  private static func makeDefaultPageStore() throws -> any CSVPageStore {
+  private static func makeDefaultPageStore(maximumPageBytes: Int) throws -> any CSVPageStore {
     let cachesURL = try FileManager.default.url(
       for: .cachesDirectory,
       in: .userDomainMask,
@@ -218,7 +231,10 @@ struct FileCSVRepository: PagedCSVRepository, Sendable {
     let directory = cachesURL
       .appendingPathComponent("CSVViewer", isDirectory: true)
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    return try FileBackedCSVPageStore(directoryURL: directory)
+    return try FileBackedCSVPageStore(
+      directoryURL: directory,
+      maximumPageBytes: maximumPageBytes
+    )
   }
 }
 
