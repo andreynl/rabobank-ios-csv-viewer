@@ -1,6 +1,16 @@
 import Foundation
 
 actor FileBackedCSVPageStore: CSVPageStore {
+  private struct PageLocation {
+    let index: Int
+    let startRow: Int
+    let rowCount: Int
+
+    func contains(_ rowIndex: Int) -> Bool {
+      rowIndex >= startRow && rowIndex < startRow + rowCount
+    }
+  }
+
   private struct StoredPage: Codable {
     let index: Int
     let startRow: Int
@@ -25,9 +35,9 @@ actor FileBackedCSVPageStore: CSVPageStore {
   private let fileManager: FileManager
   private var cache: [Int: CSVRowPage] = [:]
   private var recency: [Int] = []
+  private var pageLocations: [PageLocation] = []
   private var nextPageIndex = 0
   private var totalRowCount = 0
-  private var hasPartialPage = false
   private var isClosed = false
 
   init(
@@ -63,10 +73,6 @@ actor FileBackedCSVPageStore: CSVPageStore {
     guard rows.count <= pageSize else {
       throw CSVPageStoreError.pageTooLarge(maximum: pageSize, actual: rows.count)
     }
-    guard !hasPartialPage else {
-      throw CSVPageStoreError.appendAfterPartialPage
-    }
-
     let page = CSVRowPage(
       index: nextPageIndex,
       startRow: totalRowCount,
@@ -99,7 +105,11 @@ actor FileBackedCSVPageStore: CSVPageStore {
 
     nextPageIndex += 1
     totalRowCount += rows.count
-    hasPartialPage = rows.count < pageSize
+    pageLocations.append(PageLocation(
+      index: page.index,
+      startRow: page.startRow,
+      rowCount: page.rows.count
+    ))
     cachePage(page)
     return page
   }
@@ -108,15 +118,17 @@ actor FileBackedCSVPageStore: CSVPageStore {
     try Task.checkCancellation()
   }
 
-  func page(containing rowIndex: Int) async throws -> CSVRowPage {
-    guard rowIndex >= 0 else {
-      throw CSVPageStoreError.pageNotFound(rowIndex)
-    }
+  func pageIndex(containing rowIndex: Int) async throws -> Int {
+    try location(containing: rowIndex).index
+  }
 
-    let pageIndex = rowIndex / pageSize
+  func page(containing rowIndex: Int) async throws -> CSVRowPage {
+    let location = try location(containing: rowIndex)
+    let pageIndex = location.index
     if let cached = cache[pageIndex] {
       touch(pageIndex)
-      guard cached.rows.indices.contains(rowIndex - cached.startRow) else {
+      guard location.contains(rowIndex),
+            cached.rows.indices.contains(rowIndex - cached.startRow) else {
         throw CSVPageStoreError.pageNotFound(rowIndex)
       }
       return cached
@@ -136,6 +148,8 @@ actor FileBackedCSVPageStore: CSVPageStore {
     }
     let page = storedPage.page
     guard page.index == pageIndex,
+          page.startRow == location.startRow,
+          page.rows.count == location.rowCount,
           page.rows.indices.contains(rowIndex - page.startRow) else {
       throw CSVPageStoreError.invalidPage(pageIndex)
     }
@@ -156,6 +170,26 @@ actor FileBackedCSVPageStore: CSVPageStore {
       String(format: "page-%08d.plist", index),
       isDirectory: false
     )
+  }
+
+  private func location(containing rowIndex: Int) throws -> PageLocation {
+    guard rowIndex >= 0 else {
+      throw CSVPageStoreError.pageNotFound(rowIndex)
+    }
+    var lowerBound = 0
+    var upperBound = pageLocations.count
+    while lowerBound < upperBound {
+      let middle = lowerBound + (upperBound - lowerBound) / 2
+      let location = pageLocations[middle]
+      if rowIndex < location.startRow {
+        upperBound = middle
+      } else if rowIndex >= location.startRow + location.rowCount {
+        lowerBound = middle + 1
+      } else {
+        return location
+      }
+    }
+    throw CSVPageStoreError.pageNotFound(rowIndex)
   }
 
   private func cachePage(_ page: CSVRowPage) {

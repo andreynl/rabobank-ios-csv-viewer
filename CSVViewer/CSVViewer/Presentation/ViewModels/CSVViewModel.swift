@@ -71,7 +71,18 @@ final class CSVViewModel {
 
   func loadPage(containing rowIndex: Int) async {
     guard rowIndex >= 0, rowIndex < availableRowCount, let session = currentSession else { return }
-    let pageIndex = rowIndex / pageSize
+    let pageIndex: Int
+    do {
+      pageIndex = try await session.pages.pageIndex(containing: rowIndex)
+    } catch is CancellationError {
+      return
+    } catch {
+      guard session === currentSession else { return }
+      failedPageRows[rowIndex] = rowIndex
+      updatePageLoadErrorMessage()
+      return
+    }
+    guard session === currentSession else { return }
     if pages[pageIndex] != nil {
       markRecentlyUsed(pageIndex)
       return
@@ -83,7 +94,9 @@ final class CSVViewModel {
       let page = try await session.pages.page(containing: rowIndex)
       guard session === currentSession else { return }
       pages[page.index] = page
-      failedPageRows.removeValue(forKey: page.index)
+      failedPageRows = failedPageRows.filter { _, failedRow in
+        failedRow < page.startRow || failedRow >= page.startRow + page.rows.count
+      }
       updatePageLoadErrorMessage()
       markRecentlyUsed(page.index)
       evictPagesIfNeeded()
@@ -91,9 +104,20 @@ final class CSVViewModel {
       return
     } catch {
       guard session === currentSession else { return }
-      failedPageRows[pageIndex] = rowIndex
+      failedPageRows[rowIndex] = rowIndex
       updatePageLoadErrorMessage()
     }
+  }
+
+  func prefetch(after rowIndex: Int) async {
+    guard let page = pages.values.first(where: { page in
+      rowIndex >= page.startRow && rowIndex < page.startRow + page.rows.count
+    }) else { return }
+    let nextRow = page.startRow + page.rows.count
+    let prefetchDistance = max(min(page.rows.count, pageSize) / 10, 1)
+    guard rowIndex >= nextRow - prefetchDistance,
+          nextRow < availableRowCount else { return }
+    await loadPage(containing: nextRow)
   }
 
   func retryFailedPages() async {

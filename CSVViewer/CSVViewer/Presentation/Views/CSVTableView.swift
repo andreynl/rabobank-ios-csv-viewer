@@ -31,7 +31,7 @@ struct CSVTableView: View {
                 .accessibilityIdentifier("csvRow-\(rowIndex)")
                 .task(id: rowIndex) {
                   await viewModel.loadPage(containing: rowIndex)
-                  await prefetch(after: rowIndex)
+                  await viewModel.prefetch(after: rowIndex)
                   freezeWidthsIfPossible()
                 }
               }
@@ -85,16 +85,6 @@ struct CSVTableView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 16)
       .padding(.vertical, 6)
-  }
-
-  private func prefetch(after rowIndex: Int) async {
-    let prefetchDistance = max(viewModel.pageSize / 10, 1)
-    let offset = rowIndex % viewModel.pageSize
-    guard offset >= viewModel.pageSize - prefetchDistance else { return }
-    await viewModel.loadPage(containing: min(
-      rowIndex + prefetchDistance,
-      viewModel.availableRowCount - 1
-    ))
   }
 
   private func freezeWidthsIfPossible() {

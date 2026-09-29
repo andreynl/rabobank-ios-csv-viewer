@@ -16,12 +16,14 @@ The project deliberately goes beyond loading an entire file into memory. Every d
 
 - Strict Swift 6 concurrency checking and explicit `Sendable` boundaries.
 - Incremental CSV parsing from 64 KiB chunks instead of whole-file loading.
+- Explicit 1 MiB field, 4 MiB row, and 8 MiB page safety limits.
 - File-backed pages with bounded in-memory caches for predictable memory use.
 - Progressive UI updates while a document is still being parsed.
 - Lazy vertical rendering, horizontal table scrolling, and page prefetching.
 - Cancellation and stale-result protection when a newer import replaces an older one.
 - Typed parser, storage, file-access, and user-facing error handling.
 - Recoverable page-read errors with an in-context retry action.
+- Explicit retry for failed bundled and imported document loads.
 - Unit, integration, UI, and opt-in 50+ MB performance coverage.
 - Clean Architecture boundaries without unnecessary framework targets.
 
@@ -117,7 +119,7 @@ flowchart LR
     Repository --> Access[Security-scoped URL access]
     Repository --> Parser[StreamingCSVParser<br/>64 KiB chunks]
     Parser --> Buffer[CSVRowBuffer]
-    Buffer --> Store[FileBackedCSVPageStore<br/>500-row pages]
+    Buffer --> Store[FileBackedCSVPageStore<br/>500 rows / 8 MiB per page]
     Store --> Disk[(Temporary page files)]
     Store --> Stream[AsyncThrowingStream<br/>progress updates]
     Stream --> VM
@@ -154,7 +156,7 @@ sequenceDiagram
     VM-->>View: Loaded state
 ```
 
-`ContentView` requests the bundled document once at launch. Each later import creates a new loading generation. Starting a newer import cancels the previous producer, closes its page store, and prevents a slow stale result from replacing the current document.
+`ContentView` requests the bundled document once at launch. Each later import creates a new loading generation. Starting a newer import cancels the previous producer, closes its page store, and prevents a slow stale result from replacing the current document. If a bundled or imported load fails, the view model retains that exact request and exposes an explicit **Retry** action; selecting a newer document replaces the retry target. A file-picker failure has no source to reload and therefore does not offer Retry.
 
 The view model exposes explicit loading, streaming, loaded, empty, and failure states. Page reads are coalesced so concurrent requests for the same page share one task. A failed page remains retryable without discarding the document that is already visible.
 
@@ -165,14 +167,16 @@ The same pipeline is used regardless of file size; the included performance exer
 1. `FileCSVRepository` opens the selected source with balanced security-scoped access.
 2. Parsing runs in a detached, user-initiated task so file I/O and parsing do not block the main actor.
 3. `StreamingCSVParser` consumes 64 KiB chunks and emits complete records across chunk boundaries.
-4. `CSVRowBuffer` batches records into 500-row pages without repeatedly shifting the front of an array.
-5. `FileBackedCSVPageStore` serializes pages into a unique temporary cache directory.
+4. `CSVRowBuffer` completes a page at either 500 rows or an 8 MiB UTF-8 byte budget, without repeatedly shifting the front of an array.
+5. `FileBackedCSVPageStore` serializes pages into a unique temporary cache directory and independently rejects encoded pages larger than 8 MiB as a defense-in-depth check.
 6. The actor-backed store retains at most five recently used pages in memory.
 7. `CSVViewModel` keeps a separate, bounded three-page presentation cache and prefetches near page boundaries.
 8. `LazyVStack` materializes only the vertical rows required by the current viewport.
 9. Cancellation, failure, or replacement closes the store and removes its temporary directory.
 
-Memory therefore scales primarily with chunk, page, and cache sizes rather than total row count. Disk usage still scales with the parsed document, which is an explicit trade-off for predictable memory behaviour and random page access.
+For ordinary valid input, memory therefore scales primarily with chunk, byte-bounded page, and cache sizes rather than total row count. Disk usage still scales with the parsed document, which is an explicit trade-off for predictable memory behaviour and random page access.
+
+Row and page counts alone cannot bound memory when a valid CSV cell is extremely large. The production defaults therefore reject a field above 1 MiB and a record above 4 MiB while parsing, before either value can grow without limit. Pages are bounded independently at 8 MiB during row buffering and again after serialization. These limits are pathological-input safeguards, not a separate large-file mode: a multi-gigabyte document containing reasonably sized records still uses the same streaming, file-backed pipeline.
 
 ## Concurrency and Safety
 
@@ -209,10 +213,12 @@ Values matching the supported ISO-style date representation are formatted for di
 Errors are translated at the boundary where useful context exists:
 
 - parser errors describe malformed CSV grammar or invalid UTF-8;
+- resource-limit errors identify fields, records, or encoded pages that exceed the configured memory-safety budgets;
 - page-store errors describe invalid pages, unavailable rows, decoding, or closed-store access;
 - repository errors map missing bundle resources and file-reading failures;
 - presentation state converts failures into concise user-facing messages;
 - page-read failures preserve the current table and show a retry banner.
+- full-load failures retain the exact bundled or imported request and expose an explicit Retry action.
 
 This keeps diagnostics specific without leaking filesystem or parser implementation details into SwiftUI views.
 
@@ -220,14 +226,14 @@ This keeps diagnostics specific without leaking filesystem or parser implementat
 
 The project uses Swift Testing for unit and integration coverage and XCTest for UI and performance coverage.
 
-- Streaming-parser tests cover chunk boundaries, valid syntax, multiline data, BOM handling, row normalization, malformed quote grammar, and encoding errors.
-- Row-buffer tests verify page batching, remainder handling, and compaction behaviour.
-- Page-store tests cover persistence, bounded memory caching, reloads, cleanup, invalid access, and cancellation.
-- Repository tests cover progressive page publication, error mapping, cancellation, and security-scoped access cleanup.
+- Streaming-parser tests cover chunk boundaries, valid syntax, multiline data, BOM handling, row normalization, malformed quote grammar, encoding errors, and oversized fields and records.
+- Row-buffer tests verify row-count and byte-budget page boundaries, oversized rows, remainder handling, and compaction behaviour.
+- Page-store tests cover persistence, encoded-size enforcement, bounded memory caching, reloads, cleanup, invalid access, and cancellation.
+- Repository tests cover progressive page publication, resource-limit error mapping, cancellation, and security-scoped access cleanup.
 - Use-case tests verify repository delegation and error propagation.
-- View-model tests cover state transitions, progressive updates, request coalescing, bounded presentation caching, retry, replacement, and stale-result protection.
+- View-model tests cover state transitions, progressive updates, request coalescing, bounded presentation caching, initial-load and page retry, replacement, and stale-result protection.
 - The composition test loads the bundled sample through the real dependency graph.
-- UI tests verify launch, the import action, compact lazy-table layout, horizontal scrolling, and navigation styling.
+- UI tests verify launch, the import action, compact lazy-table layout, horizontal scrolling, navigation styling, and the full-load Retry cycle.
 - The opt-in performance test generates and validates a deterministic 50+ MB document using the real production pipeline.
 
 ### Large-file performance exercise
@@ -244,13 +250,14 @@ xcodebuild test \
   -only-testing:CSVViewerTests/CSVLargeFilePerformanceTests/testFiftyMegabyteCSVPerformance
 ```
 
-The test is skipped during the regular fast suite unless the compilation condition is supplied. Duration and memory measurements depend on the host and simulator, so they are diagnostic metrics rather than brittle universal thresholds. No generated fixture is stored in the repository.
+The test is skipped during the regular fast suite unless the compilation condition is supplied. Duration and memory measurements depend on the host and simulator, so this is a diagnostic exercise rather than a brittle universal performance threshold. It complements—but does not replace—the deterministic tests for field, row, page, and cache bounds. No generated fixture is stored in the repository.
 
 ## Design Decisions and Trade-offs
 
 - **Logical modules instead of framework targets:** preserves architectural boundaries while keeping the assignment simple to build and review.
 - **File-backed pages for every file:** one deterministic code path avoids a size threshold with two subtly different behaviours.
 - **Bounded caches:** predictable memory use costs occasional page decoding when the user scrolls far back.
+- **Byte-based safety budgets:** reject pathological single values and very wide records instead of allowing row-count limits to imply a false memory guarantee.
 - **Disk-backed random access:** supports large row counts but consumes temporary disk space proportional to the parsed data.
 - **SwiftUI lazy vertical rendering:** is sufficient for the expected column counts, while avoiding a UIKit bridge and its additional state synchronisation.
 - **Progressive indexing:** users see rows before parsing finishes, but the final total is unknown until completion.

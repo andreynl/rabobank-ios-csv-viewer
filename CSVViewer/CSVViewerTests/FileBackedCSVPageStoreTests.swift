@@ -55,7 +55,7 @@ struct FileBackedCSVPageStoreTests {
 
   @Test func persistsFullAndPartialPagesWithStableRanges() async throws {
     let directory = temporaryDirectory()
-    let store = try FileBackedCSVPageStore(directoryURL: directory)
+    let store = try FileBackedCSVPageStore(directoryURL: directory, cacheCapacity: 0)
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let firstRows = (0..<500).map { ["row-\($0)"] }
@@ -68,8 +68,26 @@ struct FileBackedCSVPageStoreTests {
     #expect(first == CSVRowPage(index: 0, startRow: 0, rows: firstRows))
     #expect(second == CSVRowPage(index: 1, startRow: 500, rows: secondRows))
 
-    let reader = try FileBackedCSVPageStore(directoryURL: directory)
-    #expect(try await reader.page(containing: 503) == second)
+    #expect(try await store.page(containing: 503) == second)
+  }
+
+  @Test func supportsMultipleVariableLengthPagesAndReloadsTheirRanges() async throws {
+    let directory = temporaryDirectory()
+    let store = try FileBackedCSVPageStore(
+      directoryURL: directory,
+      pageSize: 5,
+      cacheCapacity: 1
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let first = try await store.append([["row-0"], ["row-1"]])
+    let second = try await store.append([["row-2"], ["row-3"], ["row-4"]])
+
+    #expect(first.startRow == 0)
+    #expect(second.startRow == 2)
+    #expect(try await store.page(containing: 4) == second)
+    #expect(try await store.page(containing: 1) == first)
+
   }
 
   @Test func evictsLeastRecentlyUsedPageAndReloadsItFromDisk() async throws {

@@ -71,6 +71,38 @@ struct CSVViewModelTests {
     #expect(await provider.requestedRows.count == 1)
   }
 
+  @Test func loadsAdjacentVariableLengthPagesByTheirActualRanges() async {
+    let first = CSVRowPage(index: 0, startRow: 0, rows: [["0"], ["1"]])
+    let second = CSVRowPage(index: 1, startRow: 2, rows: [["2"], ["3"], ["4"]])
+    let provider = PageProviderStub(pages: [0: first, 1: second], pageSize: 5)
+    let setup = await makeSetup(provider: provider)
+    setup.stream.yield(progress(headers: ["name"], rows: 5, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
+
+    await setup.viewModel.loadPage(containing: 0)
+    await setup.viewModel.loadPage(containing: 2)
+
+    #expect(setup.viewModel.row(at: 2) == ["2"])
+    #expect(await provider.requestedRows == [0, 2])
+  }
+
+  @Test func prefetchUsesActualVariablePageBoundary() async {
+    let first = CSVRowPage(index: 0, startRow: 0, rows: [["0"], ["1"]])
+    let second = CSVRowPage(index: 1, startRow: 2, rows: [["2"], ["3"], ["4"]])
+    let provider = PageProviderStub(pages: [0: first, 1: second], pageSize: 5)
+    let setup = await makeSetup(provider: provider)
+    setup.stream.yield(progress(headers: ["name"], rows: 5, fraction: 1, complete: true))
+    setup.stream.finish()
+    await waitUntil { setup.viewModel.state == .loaded }
+    await setup.viewModel.loadPage(containing: 0)
+
+    await setup.viewModel.prefetch(after: 1)
+
+    #expect(setup.viewModel.row(at: 2) == ["2"])
+    #expect(await provider.requestedRows == [0, 2])
+  }
+
   @Test func evictedPageCanBeFetchedAgain() async {
     let pages = Dictionary(uniqueKeysWithValues: (0..<4).map { index in
       let start = index * 500
@@ -419,13 +451,26 @@ private actor PageProviderStub: CSVPageProviding {
   func page(containing rowIndex: Int) async throws -> CSVRowPage {
     requestedRows.append(rowIndex)
     if delay > .zero { try await Task.sleep(for: delay) }
-    let pageIndex = rowIndex / pageSize
+    guard let page = pages.values.first(where: { page in
+      rowIndex >= page.startRow && rowIndex < page.startRow + page.rows.count
+    }) else {
+      throw CSVPageStoreError.pageNotFound(rowIndex)
+    }
+    let pageIndex = page.index
     if let remainingFailures = failuresBeforeSuccess[pageIndex], remainingFailures > 0 {
       failuresBeforeSuccess[pageIndex] = remainingFailures - 1
       throw CSVPageStoreError.persistenceFailed
     }
-    guard let page = pages[pageIndex] else { throw CSVPageStoreError.pageNotFound(rowIndex) }
     return page
+  }
+
+  func pageIndex(containing rowIndex: Int) async throws -> Int {
+    guard let page = pages.values.first(where: { page in
+      rowIndex >= page.startRow && rowIndex < page.startRow + page.rows.count
+    }) else {
+      throw CSVPageStoreError.pageNotFound(rowIndex)
+    }
+    return page.index
   }
 
   func close() async { isClosed = true }

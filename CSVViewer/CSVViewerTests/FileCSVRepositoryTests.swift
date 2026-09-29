@@ -53,6 +53,41 @@ struct FileCSVRepositoryTests {
     #expect(try await session.pages.page(containing: 500).rows == [["name-500", "500"]])
   }
 
+  @Test func loadsRowsAcrossMultipleByteBoundedPages() async throws {
+    let limits = CSVResourceLimits(
+      maximumFieldBytes: 1_024,
+      maximumRowBytes: 2_048,
+      maximumPageBytes: 8 * 1_024
+    )
+    let rows = (0..<12).map { index in
+      "\(index)-" + String(repeating: Character(UnicodeScalar(65 + index)!), count: 696)
+    }
+    let url = try makeTemporaryFile(contents: Data("value\n\(rows.joined(separator: "\n"))".utf8))
+    let directory = temporaryDirectory()
+    defer {
+      try? FileManager.default.removeItem(at: url)
+      try? FileManager.default.removeItem(at: directory)
+    }
+    let repository = FileCSVRepository(
+      urlAccess: PassthroughSecurityScopedAccess(),
+      limits: limits,
+      pageStoreFactory: {
+        try FileBackedCSVPageStore(
+          directoryURL: directory,
+          cacheCapacity: 1,
+          maximumPageBytes: limits.maximumPageBytes
+        )
+      }
+    )
+
+    let session = try await repository.loadSession(from: .file(url))
+    let updates = try await collect(session.updates)
+
+    #expect(updates.last?.availableRowCount == rows.count)
+    #expect(try await session.pages.page(containing: 11).rows.last == [rows[11]])
+    #expect(try await session.pages.page(containing: 0).rows.first == [rows[0]])
+  }
+
   @Test func headerOnlyFileCompletesWithoutPage() async throws {
     let url = try makeTemporaryFile(contents: Data("name,count".utf8))
     let directory = temporaryDirectory()
