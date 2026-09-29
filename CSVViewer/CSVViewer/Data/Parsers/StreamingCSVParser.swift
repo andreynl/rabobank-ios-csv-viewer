@@ -9,18 +9,25 @@ struct StreamingCSVParser: Sendable {
 
   private static let utf8BOM: [UInt8] = [0xEF, 0xBB, 0xBF]
 
+  private let limits: CSVResourceLimits
   private var headers: [String]?
   private var record: [String] = []
   private var fieldBytes: [UInt8] = []
   private var bomCandidate: [UInt8] = []
   private var dataRowCount = 0
+  private var rowByteCount = 0
   private var fieldState = FieldState.unquoted
   private var shouldSkipLineFeed = false
   private var hasResolvedBOM = false
   private var hasInputSinceRecordSeparator = false
   private var isFinished = false
 
+  init(limits: CSVResourceLimits = .default) {
+    self.limits = limits
+  }
+
   mutating func consume(_ data: Data) throws -> CSVParserChunkResult {
+    try validateConfiguration()
     guard !isFinished else {
       return CSVParserChunkResult(headers: nil, rows: [])
     }
@@ -40,6 +47,7 @@ struct StreamingCSVParser: Sendable {
   }
 
   mutating func finish() throws -> CSVParserChunkResult {
+    try validateConfiguration()
     guard !isFinished else {
       return CSVParserChunkResult(headers: nil, rows: [])
     }
@@ -99,30 +107,36 @@ struct StreamingCSVParser: Sendable {
     if shouldSkipLineFeed {
       shouldSkipLineFeed = false
       if byte == Self.lineFeed {
+        if fieldState == .quoted {
+          try countRowByte()
+        }
         return
       }
     }
 
     switch fieldState {
     case .quoted:
+      try countRowByte()
       switch byte {
       case Self.quote:
         fieldState = .afterClosingQuote
       case Self.carriageReturn:
-        fieldBytes.append(Self.lineFeed)
+        try appendFieldByte(Self.lineFeed)
         shouldSkipLineFeed = true
       default:
-        fieldBytes.append(byte)
+        try appendFieldByte(byte)
       }
       hasInputSinceRecordSeparator = true
       return
     case .afterClosingQuote:
       switch byte {
       case Self.quote:
-        fieldBytes.append(Self.quote)
+        try countRowByte()
+        try appendFieldByte(Self.quote)
         fieldState = .quoted
         hasInputSinceRecordSeparator = true
       case Self.comma:
+        try countRowByte()
         try completeField()
         fieldState = .unquoted
         hasInputSinceRecordSeparator = true
@@ -136,16 +150,20 @@ struct StreamingCSVParser: Sendable {
         fieldState = .unquoted
         hasInputSinceRecordSeparator = false
       default:
+        try countRowByte()
         throw CSVParserError.unexpectedCharacterAfterClosingQuote(row: currentRowNumber)
       }
     case .unquoted:
       switch byte {
       case Self.quote where fieldBytes.isEmpty:
+        try countRowByte()
         fieldState = .quoted
         hasInputSinceRecordSeparator = true
       case Self.quote:
+        try countRowByte()
         throw CSVParserError.invalidQuote(row: currentRowNumber)
       case Self.comma:
+        try countRowByte()
         try completeField()
         hasInputSinceRecordSeparator = true
       case Self.carriageReturn:
@@ -156,7 +174,8 @@ struct StreamingCSVParser: Sendable {
         try completeRecord(headers: &emittedHeaders, rows: &emittedRows)
         hasInputSinceRecordSeparator = false
       default:
-        fieldBytes.append(byte)
+        try countRowByte()
+        try appendFieldByte(byte)
         hasInputSinceRecordSeparator = true
       }
     }
@@ -198,6 +217,33 @@ struct StreamingCSVParser: Sendable {
     }
 
     record.removeAll(keepingCapacity: true)
+    rowByteCount = 0
+  }
+
+  private func validateConfiguration() throws {
+    guard limits.isValid else {
+      throw CSVParserError.invalidConfiguration
+    }
+  }
+
+  private mutating func appendFieldByte(_ byte: UInt8) throws {
+    guard fieldBytes.count < limits.maximumFieldBytes else {
+      throw CSVParserError.fieldTooLarge(
+        row: currentRowNumber,
+        maximumBytes: limits.maximumFieldBytes
+      )
+    }
+    fieldBytes.append(byte)
+  }
+
+  private mutating func countRowByte() throws {
+    guard rowByteCount < limits.maximumRowBytes else {
+      throw CSVParserError.rowTooLarge(
+        row: currentRowNumber,
+        maximumBytes: limits.maximumRowBytes
+      )
+    }
+    rowByteCount += 1
   }
 
   private static let quote = UInt8(ascii: "\"")

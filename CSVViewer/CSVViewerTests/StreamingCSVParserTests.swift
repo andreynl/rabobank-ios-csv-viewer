@@ -130,8 +130,105 @@ struct StreamingCSVParserTests {
     )
   }
 
-  private func parse(chunks: [Data]) throws -> (headers: [String], rows: [[String]]) {
-    var parser = StreamingCSVParser()
+  @Test func acceptsFieldExactlyAtByteLimit() throws {
+    let limits = CSVResourceLimits(
+      maximumFieldBytes: 4,
+      maximumRowBytes: 16,
+      maximumPageBytes: 32
+    )
+
+    let result = try parse(chunks: [Data("name\nabcd".utf8)], limits: limits)
+
+    #expect(result.rows == [["abcd"]])
+  }
+
+  @Test func rejectsFieldOneByteOverLimit() {
+    let limits = CSVResourceLimits(
+      maximumFieldBytes: 4,
+      maximumRowBytes: 16,
+      maximumPageBytes: 32
+    )
+
+    expectError(
+      .fieldTooLarge(row: 1, maximumBytes: 4),
+      chunks: [Data("name\nabcde".utf8)],
+      limits: limits
+    )
+  }
+
+  @Test func rejectsQuotedFieldOverLimitAcrossChunks() {
+    let limits = CSVResourceLimits(
+      maximumFieldBytes: 4,
+      maximumRowBytes: 16,
+      maximumPageBytes: 32
+    )
+
+    expectError(
+      .fieldTooLarge(row: 1, maximumBytes: 4),
+      chunks: [Data("name\n\"abcd".utf8), Data("e\"".utf8)],
+      limits: limits
+    )
+  }
+
+  @Test func rejectsWideRowMadeFromSmallFields() {
+    let limits = CSVResourceLimits(
+      maximumFieldBytes: 2,
+      maximumRowBytes: 4,
+      maximumPageBytes: 32
+    )
+
+    expectError(
+      .rowTooLarge(row: 1, maximumBytes: 4),
+      chunks: [Data("a,b\nx,y,z".utf8)],
+      limits: limits
+    )
+  }
+
+  @Test func resetsRowByteCountAfterEveryRecord() throws {
+    let limits = CSVResourceLimits(
+      maximumFieldBytes: 1,
+      maximumRowBytes: 3,
+      maximumPageBytes: 32
+    )
+
+    let result = try parse(chunks: [Data("a,b\nx,y\nz,w".utf8)], limits: limits)
+
+    #expect(result.rows == [["x", "y"], ["z", "w"]])
+  }
+
+  @Test func countsMultibyteFieldLimitUsingUTF8Bytes() {
+    let limits = CSVResourceLimits(
+      maximumFieldBytes: 2,
+      maximumRowBytes: 8,
+      maximumPageBytes: 32
+    )
+
+    expectError(
+      .fieldTooLarge(row: 1, maximumBytes: 2),
+      chunks: [Data("a\n€".utf8)],
+      limits: limits
+    )
+  }
+
+  @Test func rejectsInvalidResourceLimitConfiguration() {
+    let limits = CSVResourceLimits(
+      maximumFieldBytes: 0,
+      maximumRowBytes: 8,
+      maximumPageBytes: 32
+    )
+
+    expectError(
+      .invalidConfiguration,
+      chunks: [Data("a\nx".utf8)],
+      limits: limits
+    )
+  }
+
+  private func parse(
+    chunks: [Data],
+    limits: CSVResourceLimits = .default
+  ) throws -> (headers: [String], rows: [[String]]) {
+    var parser = StreamingCSVParser(limits: limits)
     var headers: [String] = []
     var rows: [[String]] = []
 
@@ -151,9 +248,13 @@ struct StreamingCSVParserTests {
     return (headers, rows)
   }
 
-  private func expectError(_ expected: CSVParserError, chunks: [Data]) {
+  private func expectError(
+    _ expected: CSVParserError,
+    chunks: [Data],
+    limits: CSVResourceLimits = .default
+  ) {
     do {
-      _ = try parse(chunks: chunks)
+      _ = try parse(chunks: chunks, limits: limits)
       Issue.record("Expected \(expected) to be thrown")
     } catch {
       #expect(error as? CSVParserError == expected)
