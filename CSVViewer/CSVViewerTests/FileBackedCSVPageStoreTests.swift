@@ -10,6 +10,47 @@ struct FileBackedCSVPageStoreTests {
     #expect(throws: CSVPageStoreError.invalidConfiguration) {
       try FileBackedCSVPageStore(directoryURL: temporaryDirectory(), cacheCapacity: -1)
     }
+    #expect(throws: CSVPageStoreError.invalidConfiguration) {
+      try FileBackedCSVPageStore(directoryURL: temporaryDirectory(), maximumPageBytes: 0)
+    }
+  }
+
+  @Test func persistsPageWithinEncodedByteLimit() async throws {
+    let directory = temporaryDirectory()
+    let store = try FileBackedCSVPageStore(
+      directoryURL: directory,
+      maximumPageBytes: 1_024
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let page = try await store.append([["small", "row"]])
+
+    #expect(page.index == 0)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == 1)
+  }
+
+  @Test func rejectsOversizedEncodedPageWithoutAdvancingStore() async throws {
+    let directory = temporaryDirectory()
+    let store = try FileBackedCSVPageStore(
+      directoryURL: directory,
+      maximumPageBytes: 256
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    do {
+      _ = try await store.append([[String(repeating: "x", count: 1_024)]])
+      Issue.record("Expected encoded page limit failure")
+    } catch let CSVPageStoreError.encodedPageTooLarge(maximumBytes, actualBytes) {
+      #expect(maximumBytes == 256)
+      #expect(actualBytes > maximumBytes)
+    } catch {
+      Issue.record("Unexpected error: \(error)")
+    }
+
+    #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    let firstValidPage = try await store.append([["ok"]])
+    #expect(firstValidPage.index == 0)
+    #expect(firstValidPage.startRow == 0)
   }
 
   @Test func persistsFullAndPartialPagesWithStableRanges() async throws {

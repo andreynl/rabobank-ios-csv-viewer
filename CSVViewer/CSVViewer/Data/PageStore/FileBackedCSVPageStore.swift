@@ -20,6 +20,7 @@ actor FileBackedCSVPageStore: CSVPageStore {
   let directoryURL: URL
   let pageSize: Int
   let cacheCapacity: Int
+  let maximumPageBytes: Int
 
   private let fileManager: FileManager
   private var cache: [Int: CSVRowPage] = [:]
@@ -33,14 +34,16 @@ actor FileBackedCSVPageStore: CSVPageStore {
     directoryURL: URL,
     pageSize: Int = CSVPageConfiguration.defaultPageSize,
     cacheCapacity: Int = 5,
+    maximumPageBytes: Int = CSVResourceLimits.default.maximumPageBytes,
     fileManager: FileManager = .default
   ) throws {
-    guard pageSize > 0, cacheCapacity >= 0 else {
+    guard pageSize > 0, cacheCapacity >= 0, maximumPageBytes > 0 else {
       throw CSVPageStoreError.invalidConfiguration
     }
     self.directoryURL = directoryURL
     self.pageSize = pageSize
     self.cacheCapacity = cacheCapacity
+    self.maximumPageBytes = maximumPageBytes
     self.fileManager = fileManager
     try fileManager.createDirectory(
       at: directoryURL,
@@ -74,12 +77,21 @@ actor FileBackedCSVPageStore: CSVPageStore {
       let encoder = PropertyListEncoder()
       encoder.outputFormat = .binary
       let data = try encoder.encode(StoredPage(page))
+      guard data.count <= maximumPageBytes else {
+        throw CSVPageStoreError.encodedPageTooLarge(
+          maximumBytes: maximumPageBytes,
+          actualBytes: data.count
+        )
+      }
       try Task.checkCancellation()
       try data.write(to: destinationURL, options: .atomic)
       try Task.checkCancellation()
     } catch is CancellationError {
       try? fileManager.removeItem(at: destinationURL)
       throw CancellationError()
+    } catch let error as CSVPageStoreError {
+      try? fileManager.removeItem(at: destinationURL)
+      throw error
     } catch {
       try? fileManager.removeItem(at: destinationURL)
       throw CSVPageStoreError.persistenceFailed

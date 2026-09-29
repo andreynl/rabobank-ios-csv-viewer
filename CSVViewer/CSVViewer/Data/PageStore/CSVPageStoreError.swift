@@ -6,4 +6,5 @@ enum CSVPageStoreError: Error, Equatable, Sendable {
   case appendAfterPartialPage
   case pageNotFound(Int)
   case invalidPage(Int)
+  case encodedPageTooLarge(maximumBytes: Int, actualBytes: Int)
 }
