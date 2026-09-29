@@ -195,6 +195,74 @@ struct CSVViewModelTests {
     }
   }
 
+  @Test func failedBundledLoadCanBeRetriedExplicitly() async {
+    let useCase = ControllablePagedLoadUseCase()
+    let viewModel = CSVViewModel(loadCSV: useCase)
+    let source = CSVSource.bundled(name: "issues", extension: "csv")
+    viewModel.loadBundledSampleIfNeeded()
+    await useCase.waitUntilRequested(source)
+    await useCase.fail(source, with: CSVLoadingError.readFailed)
+    await waitUntil { viewModel.state == .failure("The file could not be read.") }
+
+    #expect(viewModel.canRetryLoad)
+    viewModel.retryLoad()
+    await useCase.waitUntilRequestCount(2, for: source)
+
+    #expect(viewModel.state == .loading)
+    #expect(viewModel.displayedFilename == "issues.csv")
+  }
+
+  @Test func successfulRetryReturnsToLoadedState() async {
+    let useCase = ControllablePagedLoadUseCase()
+    let viewModel = CSVViewModel(loadCSV: useCase)
+    let source = CSVSource.bundled(name: "issues", extension: "csv")
+    viewModel.loadBundledSampleIfNeeded()
+    await useCase.waitUntilRequested(source)
+    await useCase.fail(source, with: CSVLoadingError.readFailed)
+    await waitUntil { viewModel.state == .failure("The file could not be read.") }
+
+    viewModel.retryLoad()
+    await useCase.waitUntilRequestCount(2, for: source)
+    let stream = ProgressStream()
+    await useCase.succeed(source, with: stream.session(pages: PageProviderStub(pages: [:])))
+    stream.yield(progress(headers: ["name"], rows: 0, fraction: 1, complete: true))
+    stream.finish()
+    await waitUntil { viewModel.state == .loaded }
+
+    #expect(viewModel.headers == ["name"])
+    #expect(viewModel.canRetryLoad)
+  }
+
+  @Test func newerImportReplacesRetryTarget() async {
+    let useCase = ControllablePagedLoadUseCase()
+    let viewModel = CSVViewModel(loadCSV: useCase)
+    let bundled = CSVSource.bundled(name: "issues", extension: "csv")
+    let importedURL = URL(fileURLWithPath: "/tmp/new.csv")
+    let imported = CSVSource.file(importedURL)
+    viewModel.loadBundledSampleIfNeeded()
+    await useCase.waitUntilRequested(bundled)
+    await useCase.fail(bundled, with: CSVLoadingError.readFailed)
+    await waitUntil { viewModel.state == .failure("The file could not be read.") }
+
+    viewModel.importFile(at: importedURL)
+    await useCase.waitUntilRequested(imported)
+    await useCase.fail(imported, with: CSVLoadingError.readFailed)
+    await waitUntil { viewModel.state == .failure("The file could not be read.") }
+    viewModel.retryLoad()
+    await useCase.waitUntilRequestCount(2, for: imported)
+
+    #expect(await useCase.requestCount(for: bundled) == 1)
+    #expect(viewModel.displayedFilename == "new.csv")
+  }
+
+  @Test func pickerFailureDoesNotExposeRetry() {
+    let viewModel = CSVViewModel(loadCSV: ControllablePagedLoadUseCase())
+
+    viewModel.handleImportFailure(RepositoryTestFailure.expected)
+
+    #expect(!viewModel.canRetryLoad)
+  }
+
   @Test func staleFailureCannotOverwriteNewerImport() async {
     let useCase = ControllablePagedLoadUseCase()
     let viewModel = CSVViewModel(loadCSV: useCase)
@@ -276,6 +344,14 @@ private actor ControllablePagedLoadUseCase: LoadPagedCSVUseCaseProtocol {
     Issue.record("Expected request for \(source)")
   }
 
+  func waitUntilRequestCount(_ expectedCount: Int, for source: CSVSource) async {
+    for _ in 0..<1_000 {
+      if requestCount(for: source) == expectedCount { return }
+      await Task.yield()
+    }
+    Issue.record("Expected \(expectedCount) requests for \(source)")
+  }
+
   func requestCount(for source: CSVSource) -> Int { sources.filter { $0 == source }.count }
   func succeed(_ source: CSVSource, with session: CSVLoadSession) { resume(source, .success(session)) }
   func fail(_ source: CSVSource, with error: Error) { resume(source, .failure(error)) }
@@ -284,6 +360,10 @@ private actor ControllablePagedLoadUseCase: LoadPagedCSVUseCaseProtocol {
     guard let index = requests.firstIndex(where: { $0.source == source }) else { return }
     requests.remove(at: index).continuation.resume(with: result)
   }
+}
+
+private enum RepositoryTestFailure: Error {
+  case expected
 }
 
 private final class ProgressStream: @unchecked Sendable {

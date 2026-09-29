@@ -4,6 +4,11 @@ import Observation
 @Observable
 @MainActor
 final class CSVViewModel {
+  private struct LoadRequest: Sendable {
+    let source: CSVSource
+    let filename: String
+  }
+
   private(set) var state: CSVViewState = .idle
   private(set) var displayedFilename = ""
   private(set) var headers: [String] = []
@@ -23,6 +28,11 @@ final class CSVViewModel {
   private var failedPageRows: [Int: Int] = [:]
   private var hasRequestedBundledSample = false
   private var requestGeneration = 0
+  private var lastLoadRequest: LoadRequest?
+
+  var canRetryLoad: Bool {
+    lastLoadRequest != nil
+  }
 
   init(loadCSV: any LoadPagedCSVUseCaseProtocol, maximumCachedPages: Int = 3) {
     self.loadCSV = loadCSV
@@ -41,7 +51,13 @@ final class CSVViewModel {
 
   func handleImportFailure(_ error: Error) {
     replaceCurrentLoad()
+    lastLoadRequest = nil
     state = .failure("The selected file could not be imported.")
+  }
+
+  func retryLoad() {
+    guard let lastLoadRequest else { return }
+    load(lastLoadRequest)
   }
 
   func row(at rowIndex: Int) -> [String]? {
@@ -88,14 +104,19 @@ final class CSVViewModel {
   }
 
   private func load(source: CSVSource, filename: String) {
+    load(LoadRequest(source: source, filename: filename))
+  }
+
+  private func load(_ request: LoadRequest) {
     replaceCurrentLoad()
+    lastLoadRequest = request
     let generation = requestGeneration
-    displayedFilename = filename
+    displayedFilename = request.filename
     state = .loading
 
     loadingTask = Task { [loadCSV] in
       do {
-        let session = try await loadCSV.execute(source: source)
+        let session = try await loadCSV.execute(source: request.source)
         guard generation == requestGeneration else {
           session.cancel()
           await session.pages.close()

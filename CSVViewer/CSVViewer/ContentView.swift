@@ -21,7 +21,10 @@ struct ContentView: View {
         case .empty:
           EmptyCSVView()
         case let .failure(message):
-          CSVErrorView(message: message)
+          CSVErrorView(
+            message: message,
+            onRetry: viewModel.canRetryLoad ? { viewModel.retryLoad() } : nil
+          )
         }
       }
       .navigationTitle("CSV Viewer")

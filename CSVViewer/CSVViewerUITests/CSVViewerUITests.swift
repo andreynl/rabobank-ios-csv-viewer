@@ -63,4 +63,17 @@ final class CSVViewerUITests: XCTestCase {
     XCTAssertTrue(navigationBar.waitForExistence(timeout: 5))
     XCTAssertLessThan(navigationBar.frame.height, 60)
   }
+
+  @MainActor
+  func testFailedInitialLoadCanBeRetried() {
+    let app = XCUIApplication()
+    app.launchArguments = ["-UITestForceCSVLoadFailure"]
+    app.launch()
+
+    let retryButton = app.buttons["retryCSVLoadButton"]
+    XCTAssertTrue(retryButton.waitForExistence(timeout: 5))
+    retryButton.tap()
+    XCTAssertTrue(app.descendants(matching: .any)["csvLoadingState"].waitForExistence(timeout: 2))
+    XCTAssertTrue(retryButton.waitForExistence(timeout: 5))
+  }
 }
