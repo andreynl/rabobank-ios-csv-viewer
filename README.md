@@ -40,15 +40,41 @@ The project deliberately goes beyond loading an entire file into memory. Every d
 | Persistence | `FileManager`, file-backed page store | Keeps parsed pages in temporary cache storage instead of retaining the full CSV in RAM |
 | File access | SwiftUI `fileImporter`, security-scoped URLs | Imports documents selected outside the application sandbox and balances access correctly |
 | Unit tests | Swift Testing | Parser, page store, repository, use-case, composition, and view-model coverage |
-| UI/performance tests | XCTest / XCUITest | Launch and import smoke tests plus opt-in clock and memory metrics for a generated 50+ MB CSV |
+| UI/performance tests | XCTest / XCUITest | Launch and visible-content smoke tests plus opt-in clock and memory metrics for a generated 50+ MB CSV |
 | Dependency management | Constructor injection | Wires repository and use-case abstractions without a third-party DI framework |
 
 The application intentionally has no third-party runtime dependencies.
 
 ## Requirements
 
-- Xcode 27 or newer
-- iOS 27 Simulator or device
+- macOS with Xcode 27 or newer
+- Swift 6 toolchain with strict concurrency checking
+- iOS 27 Simulator or an iPhone/iPad running iOS 27 or newer
+- Enough temporary device storage for file-backed pages; disk use scales with the imported document
+- No package installation or third-party runtime dependencies
+
+The deployment target matches the toolchain used for this submission. The production code relies on SwiftUI, Observation, Swift Concurrency, Foundation, and XCTest/Swift Testing only.
+
+## Assignment Coverage
+
+| Assignment expectation | Implementation |
+| --- | --- |
+| Visualize the supplied `issues.csv` | The bundled document loads automatically and is displayed as a horizontally and vertically scrollable table |
+| Keep parsing off the UI thread | File I/O, parsing, normalization, and page production run in a detached user-initiated task; UI-observed state remains `MainActor` isolated |
+| Work with other validation files | The parser does not hard-code the sample schema, supports different headers and row counts within the documented limits, and uses the same streaming pipeline for small and large documents |
+| Structure / Architecture bonus | Logical Domain, Data, Presentation, and App boundaries with inward dependencies and constructor injection |
+| Application lifecycle bonus | Cooperative cancellation, replacement of stale imports, balanced security-scoped access, session cleanup, and explicit retry flows |
+| Testing bonus | Focused parser/storage/repository/view-model tests, composition coverage, UI tests, and an opt-in generated 50+ MB exercise |
+
+## Supported Input
+
+- UTF-8 comma-separated files, optionally beginning with a UTF-8 byte-order mark
+- Quoted fields, embedded commas, escaped quotes, and line breaks inside quoted fields
+- LF and CRLF record endings, empty fields, trailing fields, and a final record without a newline
+- Arbitrary column names and row counts; the first record defines the table header
+- Short rows padded with empty cells so every displayed row matches the header
+
+The default resource budgets are 1 MiB per field, 4 MiB per source row, and 8 MiB per page. Rows wider than the header, malformed quote grammar, invalid UTF-8, and values exceeding these limits fail with an explicit error instead of being silently truncated or discarded.
 
 ## Run
 
@@ -158,7 +184,7 @@ sequenceDiagram
 
 `ContentView` requests the bundled document once at launch. Each later import creates a new loading generation. Starting a newer import cancels the previous producer, closes its page store, and prevents a slow stale result from replacing the current document. If a bundled or imported load fails, the view model retains that exact request and exposes an explicit **Retry** action; selecting a newer document replaces the retry target. A file-picker failure has no source to reload and therefore does not offer Retry.
 
-The view model exposes explicit loading, streaming, loaded, empty, and failure states. Page reads are coalesced so concurrent requests for the same page share one task. A failed page remains retryable without discarding the document that is already visible.
+The view model exposes explicit loading, streaming, loaded, empty, and failure states. Duplicate requests for a page are coalesced while a read is in flight. A failed page remains retryable without discarding the document that is already visible.
 
 ## Large-File Strategy
 
@@ -214,7 +240,7 @@ Errors are translated at the boundary where useful context exists:
 
 - parser errors describe malformed CSV grammar or invalid UTF-8;
 - resource-limit errors identify fields, records, or encoded pages that exceed the configured memory-safety budgets;
-- page-store errors describe invalid pages, unavailable rows, decoding, or closed-store access;
+- page-store errors describe invalid pages, unavailable rows, persistence failures, decoding failures, and resource-limit violations;
 - repository errors map missing bundle resources and file-reading failures;
 - presentation state converts failures into concise user-facing messages;
 - page-read failures preserve the current table and show a retry banner.
@@ -233,7 +259,7 @@ The project uses Swift Testing for unit and integration coverage and XCTest for 
 - Use-case tests verify repository delegation and error propagation.
 - View-model tests cover state transitions, progressive updates, request coalescing, bounded presentation caching, initial-load and page retry, replacement, and stale-result protection.
 - The composition test loads the bundled sample through the real dependency graph.
-- UI tests verify launch, the import action, compact lazy-table layout, horizontal scrolling, navigation styling, and the full-load Retry cycle.
+- UI tests verify launch, presence of the import action, compact lazy-table layout, horizontal scrolling, navigation styling, and the full-load Retry cycle. The system document picker itself is intentionally left to platform integration rather than UI automation.
 - The opt-in performance test generates and validates a deterministic 50+ MB document using the real production pipeline.
 
 ### Large-file performance exercise
